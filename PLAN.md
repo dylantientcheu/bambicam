@@ -88,10 +88,13 @@ for regression testing; repeat it on the final hosted deployment.
 - [x] Record completed M0/M1 acceptance consistently.
 - [x] Create Railway project and separate web/relay services, one replica each.
 - [x] Verify both deployed services with public HTTPS and WebSocket smoke checks.
-- [ ] Complete custom-domain DNS and certificate activation.
-- [ ] Publish the cleaned repository and pass CI on the public revision.
+- [x] Activate `bambi.cam` with HTTPS and verify hosted browser pairing.
+- [ ] Finish `relay.bambi.cam` certificate activation; the valid Railway WSS hostname works meanwhile.
+- [x] Publish the cleaned repository and pass CI on the public revision.
+- [x] Connect GitHub autodeploys and require passing CI for both services.
 - [x] Add screenshots using synthetic media only.
-- [ ] Verify the Compose path on a clean checkout and both supported CPU architectures.
+- [x] Verify Compose with browser tests on arm64, and build both images from a clean checkout on amd64.
+- [ ] Run the Compose pairing smoke on an amd64 host.
 - [ ] Validate the private Tailscale recipe on real devices.
 - [ ] Record hosted restart recovery, resource use, and an eight-hour device run.
 - [ ] Set operational uptime/billing alerts and finish the stranger installation test.
