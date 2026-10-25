@@ -1,0 +1,16 @@
+**
+!package.json
+!package-lock.json
+!.dockerignore
+!relay/
+!relay/package.json
+!relay/server.mjs
+!relay/Dockerfile
+!web/
+!web/**
+!docker/
+!docker/**
+web/node_modules/
+web/dist/
+**/.env
+**/.env.*

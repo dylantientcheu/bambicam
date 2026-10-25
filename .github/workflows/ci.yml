@@ -1,0 +1,33 @@
+name: Checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.15.0'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: node scripts/generate-notices.mjs && git diff --exit-code -- THIRD_PARTY_NOTICES.md web/public/third-party-notices.txt
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - run: docker build -t bambicam-relay -f relay/Dockerfile .
+      - run: docker build -t bambicam-web -f docker/web.Dockerfile .
+      - run: docker run -d --name relay-smoke -p 8787:8787 bambicam-relay
+      - run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8787/health; then break; fi
+            sleep 1
+          done
+          node scripts/smoke-relay.mjs
+      - if: always()
+        run: docker rm -f relay-smoke || true
