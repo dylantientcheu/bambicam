@@ -1,6 +1,8 @@
 **
 !package.json
 !package-lock.json
+!LICENSE
+!THIRD_PARTY_NOTICES.md
 !.dockerignore
 !relay/
 !relay/package.json

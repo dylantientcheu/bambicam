@@ -15,8 +15,8 @@ the hosted M2 rollout is in progress.
 ## Use Bambicam
 
 The intended hosted address is **[bambi.cam](https://bambi.cam)**. Domain/TLS
-activation is in progress; [deployment instructions](docs/DEPLOYMENT.md) cover
-the pilot and DNS setup.
+activation is in progress. Until then, use the [hosted pilot](https://web-production-b7a450.up.railway.app)
+on both devices. [Deployment instructions](docs/DEPLOYMENT.md) cover DNS setup.
 
 1. Open the same address on both devices.
 2. On the nursery phone, choose **Baby unit**, start the camera/microphone, and

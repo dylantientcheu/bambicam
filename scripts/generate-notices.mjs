@@ -21,4 +21,5 @@ for (const [directory, pkg] of Object.entries(lock.packages)) {
 const text = sections.join('\n');
 await writeFile('THIRD_PARTY_NOTICES.md', text);
 await writeFile('web/public/third-party-notices.txt', text);
+await writeFile('web/public/license.txt', await readFile('LICENSE', 'utf8'));
 console.log('Generated repository and distributed runtime license notices.');

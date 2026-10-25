@@ -6,6 +6,7 @@ COPY relay/package.json relay/package.json
 COPY web/package.json web/package.json
 RUN npm ci --omit=dev --workspace=@bambicam/relay --ignore-scripts && npm cache clean --force
 COPY --chown=node:node relay/server.mjs relay/server.mjs
+COPY LICENSE THIRD_PARTY_NOTICES.md ./
 USER node
 EXPOSE 8787
 CMD ["node", "relay/server.mjs"]

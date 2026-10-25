@@ -17,7 +17,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: node scripts/generate-notices.mjs && git diff --exit-code -- THIRD_PARTY_NOTICES.md web/public/third-party-notices.txt
+      - run: node scripts/generate-notices.mjs && git diff --exit-code -- THIRD_PARTY_NOTICES.md web/public/third-party-notices.txt web/public/license.txt
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
       - run: docker build -t bambicam-relay -f relay/Dockerfile .
