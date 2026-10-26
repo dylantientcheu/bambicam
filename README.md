@@ -1,4 +1,8 @@
-# bambicam
+<h1 align="center">
+  <img src="web/public/favicon.svg" alt="" width="64" height="64">
+  <br>
+  bambicam
+</h1>
 
 Two devices, one private live view. Leave a phone in the nursery as the **baby
 unit** and use another device as the **parent unit**. Audio and video travel

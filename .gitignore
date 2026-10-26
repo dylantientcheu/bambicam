@@ -17,3 +17,6 @@ coverage/
 *.key
 *.p12
 *.pfx
+
+# Detailed working roadmap stays on this machine.
+/PLAN.local.md
