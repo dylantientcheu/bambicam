@@ -1,4 +1,4 @@
-# Pairing and signaling (M1)
+# Pairing and signaling (v1)
 
 This describes the implemented version 1 format. It is an initial protocol,
 not an independently audited security design.
