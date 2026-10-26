@@ -128,20 +128,25 @@ main {
   padding: 32px;
   text-align: left;
   color: var(--purple);
-  transition: background 150ms ease;
+  transition: background-color 150ms ease, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .baby-choice {
   background: var(--lavender);
-}
-.baby-choice:hover {
-  background: #dfd4ee;
 }
 .parent-choice {
   background: #fff;
   box-shadow: inset 0 0 0 1px #e5dfed;
 }
-.parent-choice:hover {
-  background: #fbfaff;
+.role-choice:active:not(:focus-visible) {
+  transform: scale(0.985);
+}
+@media (hover: hover) and (pointer: fine) {
+  .baby-choice:hover {
+    background: #dfd4ee;
+  }
+  .parent-choice:hover {
+    background: #fbfaff;
+  }
 }
 .role-icon {
   display: grid;
@@ -236,17 +241,23 @@ main {
   color: #fff;
   font-weight: 600;
   font-size: 15px;
+  transition: background-color 150ms ease, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
-.button:hover {
-  background: #58437d;
+.button:active:not(:focus-visible):not(:disabled) {
+  transform: scale(0.97);
 }
 .button.secondary {
   background: #fff;
   color: var(--purple);
   border-color: #c8bdd9;
 }
-.button.secondary:hover {
-  background: var(--lavender);
+@media (hover: hover) and (pointer: fine) {
+  .button:hover:not(:disabled) {
+    background: #58437d;
+  }
+  .button.secondary:hover:not(:disabled) {
+    background: var(--lavender);
+  }
 }
 .text-button {
   display: block;
@@ -271,9 +282,15 @@ main {
   background: transparent;
   color: var(--purple);
   flex-shrink: 0;
+  transition: background-color 150ms ease, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
-.icon-button:hover {
-  background: #6d57980d;
+.icon-button:active:not(:focus-visible):not(:disabled) {
+  transform: scale(0.94);
+}
+@media (hover: hover) and (pointer: fine) {
+  .icon-button:hover:not(:disabled) {
+    background: #6d57980d;
+  }
 }
 [data-tooltip]::after {
   content: attr(data-tooltip);
@@ -364,6 +381,17 @@ summary {
   background: #fbfaff;
   box-shadow: 0 24px 80px #342d4322;
   overscroll-behavior: contain;
+  opacity: 0;
+  transform: translateY(6px) scale(0.985);
+  transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1), transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.options-sheet[open] {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  @starting-style {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
 }
 .options-sheet::backdrop {
   background: #28213255;
@@ -392,6 +420,7 @@ summary {
   color: var(--ink);
   font-size: 15px;
   list-style: none;
+  transition: background-color 150ms ease, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .menu-section > summary::-webkit-details-marker {
   display: none;
@@ -414,9 +443,14 @@ summary {
   flex-shrink: 0;
   color: var(--purple);
 }
-.menu-row:hover,
-.menu-section > summary:hover {
-  background: var(--paper);
+.menu-row:active:not(:focus-visible) {
+  transform: scale(0.99);
+}
+@media (hover: hover) and (pointer: fine) {
+  .menu-row:hover,
+  .menu-section > summary:hover {
+    background: var(--paper);
+  }
 }
 .menu-content {
   padding: 4px 8px 12px;
@@ -731,5 +765,13 @@ summary {
   *::after {
     transition: none !important;
     scroll-behavior: auto !important;
+  }
+  .options-sheet[open] {
+    opacity: 1;
+    transform: none;
+    @starting-style {
+      opacity: 1;
+      transform: none;
+    }
   }
 }
