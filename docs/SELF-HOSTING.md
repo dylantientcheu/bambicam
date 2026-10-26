@@ -40,11 +40,15 @@ Create a local `.env` (ignored by Git):
 ```dotenv
 BAMBICAM_DOMAIN=monitor.example.com
 BAMBICAM_BIND=0.0.0.0
+BAMBICAM_ORIGINS=https://monitor.example.com
 ```
 
 Run `docker compose up --build -d`, then open `https://monitor.example.com` on
 both phones. Caddy obtains and renews the certificate. Keep its named volumes
 across updates. Do not expose the relay's port 8787 separately.
+Compose trusts only its Caddy ingress for source limits: Caddy overwrites
+`X-Real-IP` with its TCP peer's address. Adding another proxy requires reviewing
+that boundary. Otherwise all users behind it share one source limit.
 
 ## Private HTTPS with Tailscale
 
@@ -60,6 +64,16 @@ tailscale serve status
 Follow any Tailscale HTTPS setup prompt. Open the printed HTTPS address on both
 phones. Serve restricts access to your tailnet; Funnel would expose it publicly
 and is not needed here. See the [Serve reference](https://tailscale.com/docs/reference/tailscale-cli/serve).
+Set `BAMBICAM_ORIGINS` in `.env` to that exact HTTPS origin, then rerun
+`docker compose up -d` before pairing. Multiple trusted origins can be separated
+by commas. When smoke-testing a custom origin, set `BAMBICAM_ORIGIN` to the same
+value; the smoke client otherwise sends `http://localhost:8080`.
+
+For development HTTPS or a tunnel, set `RELAY_ALLOWED_ORIGINS` on the Node relay
+to the exact app origin. Direct Node operation ignores all forwarded IP headers
+unless `RELAY_TRUST_PROXY=true` is explicitly set. Default development origins
+are HTTP localhost/127.0.0.1 on ports 5173, 4173 and 8080, plus the hosted app
+origin `https://bambi.cam`. Production should set only the origins it serves.
 
 This provides private access to the web app and signaling, not a guarantee that
 browser WebRTC can connect across every network. Start on the same Wi-Fi. You

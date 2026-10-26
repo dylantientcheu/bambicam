@@ -12,8 +12,10 @@ values are fragment-only. An empty `s` selects LAN only; legacy links without
 `s` use the default STUN endpoint. Only STUN URLs are accepted, never TURN.
 The parent reads the fragment into memory and immediately removes it with
 `history.replaceState`. In-app scanning rejects links for a different origin
-or pathname. A valid pairing connects immediately; the relay is available in
-Options → Advanced.
+or pathname. A valid pairing connects immediately when its relay and STUN match
+the configured or remembered settings (disabling STUN is also allowed). Changing
+either server otherwise requires explicit approval before contact. The settings
+are available in Options → Advanced.
 
 Use HKDF-SHA-256 with the decoded secret as input keying material and an empty
 salt. UTF-8 `info` labels are:
@@ -31,12 +33,18 @@ Connect to the configured WebSocket endpoint. The first frame is text JSON:
 The server responds with `{"type":"joined"}`. When there are two sockets, it
 sends `{"type":"peer-joined"}` to both. On departure it sends
 `{"type":"peer-left"}` to the remaining peer. These controls are untrusted;
-they do not authenticate the other device. A socket can join only once.
+they do not authenticate the other device. When a third socket is refused, current
+members receive `{"type":"peer-rejected"}` at most once per ten seconds per room.
+This advisory control neither authenticates the rejected peer nor interrupts the
+existing media connection. Older clients ignore it. A socket can join only once.
+Upgrades require an exact allowed Origin, including non-browser smoke clients.
 
 Subsequent client frames are binary, at most 65,536 bytes. They are forwarded
 unchanged, never echoed to the sender or stored for delivery to a later joiner.
 Text frames after joining are rejected. Empty rooms are removed immediately
-on socket close; dead connections are detected by the relay heartbeat.
+on socket close; dead connections are detected by the relay heartbeat. A socket
+alone in its room for ten minutes closes with 1013, allowing the normal reconnect
+backoff. Pongs and messages do not extend that deadline; pairing cancels it.
 
 ## Encrypted envelope
 

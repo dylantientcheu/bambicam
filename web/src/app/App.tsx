@@ -15,6 +15,7 @@ import {
 import {
   defaultRelay,
   newSecret,
+  needsServerApproval,
   pairingUrl,
   parsePairing,
   validateRelay,
@@ -45,6 +46,12 @@ const initial = (() => {
 })();
 const rememberedOnOpen = loadRemembered(pageUrl);
 const initialPairing = initial.pairing ?? (initial.error ? null : rememberedOnOpen);
+const trustedServers = rememberedOnOpen ?? {
+  relay: import.meta.env.VITE_RELAY_URL ?? defaultRelay(pageUrl),
+  stun: import.meta.env.VITE_STUN_URL ?? DEFAULT_STUN,
+};
+const initialPending = initial.pairing && needsServerApproval(initial.pairing, trustedServers)
+  ? initial.pairing : null;
 const labels: Record<Stage, string> = {
   connecting: 'Connecting to relay',
   waiting: 'Waiting for the other device',
@@ -59,10 +66,10 @@ export function App() {
     window.isSecureContext && !!navigator.mediaDevices?.getUserMedia && !!crypto.subtle;
   const [role, setRole] = useState<Role | null>(initialPairing || initial.error ? 'parent' : null);
   const [relay, setRelay] = useState(
-    initialPairing?.relay ?? import.meta.env.VITE_RELAY_URL ?? defaultRelay(pageUrl),
+    initialPending ? trustedServers.relay : initialPairing?.relay ?? trustedServers.relay,
   );
   const [stun, setStun] = useState(
-    initialPairing?.stun ?? import.meta.env.VITE_STUN_URL ?? DEFAULT_STUN,
+    initialPending ? trustedServers.stun : initialPairing?.stun ?? trustedServers.stun,
   );
   const [secret, setSecret] = useState(initialPairing?.secret ?? '');
   const [saved, setSaved] = useState(rememberedOnOpen);
@@ -72,7 +79,8 @@ export function App() {
   const [storageError, setStorageError] = useState('');
   const [local, setLocal] = useState<MediaStream | null>(null);
   const [remote, setRemote] = useState<MediaStream | null>(null);
-  const [running, setRunning] = useState(!!initial.pairing && secure);
+  const [running, setRunning] = useState(!!initial.pairing && !initialPending && secure);
+  const [pendingPairing, setPendingPairing] = useState(initialPending);
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState<Stage>('connecting');
   const [path, setPath] = useState<Path | null>(null);
@@ -82,6 +90,8 @@ export function App() {
   const [link, setLink] = useState('');
   const [generation, setGeneration] = useState(0);
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [showCode, setShowCode] = useState(true);
+  const [joinRejected, setJoinRejected] = useState(false);
   const captureRequest = useRef(0);
   const connectedOnce = useRef(false);
   const localRef = useRef<MediaStream | null>(null);
@@ -103,7 +113,7 @@ export function App() {
     }
     window.addEventListener('hashchange', openedPairing);
     return () => window.removeEventListener('hashchange', openedPairing);
-  }, [saved, local]);
+  }, [saved, local, relay, stun]);
 
   useEffect(() => {
     if (!local) return;
@@ -120,6 +130,8 @@ export function App() {
     if (!running || !role || !secret) return;
     let active = true;
     connectedOnce.current = false;
+    setShowCode(true);
+    setJoinRejected(false);
     setError('');
     setStage('connecting');
     setRemote(null);
@@ -132,7 +144,10 @@ export function App() {
       stream: localRef.current ?? undefined,
       onStage: (value) => {
         if (active) {
-          if (value === 'live') connectedOnce.current = true;
+          if (value === 'live') {
+            connectedOnce.current = true;
+            setShowCode(false);
+          }
           setStage(value);
         }
       },
@@ -144,6 +159,9 @@ export function App() {
       },
       onError: (message) => {
         if (active) setError(message);
+      },
+      onJoinRejected: () => {
+        if (active && role === 'baby') setJoinRejected(true);
       },
     })
       .then((handle) => {
@@ -193,6 +211,7 @@ export function App() {
     setLink('');
     setRemember(false);
     setStorageError('');
+    setPendingPairing(null);
   }
   async function startBaby() {
     const request = ++captureRequest.current;
@@ -264,18 +283,25 @@ export function App() {
     setError('');
     try {
       const pairing = parsePairing(value.trim(), pageUrl);
-      setSecret(pairing.secret);
-      setRelay(pairing.relay);
-      setStun(pairing.stun);
-      setRemember(pairing.secret === saved?.secret);
       setLink('');
       setRole('parent');
-      setRunning(secure);
-      // Reopening the same code must also rebuild the session reset by hashchange.
-      setGeneration((value) => value + 1);
+      if (needsServerApproval(pairing, { relay, stun })) {
+        setRunning(false);
+        setPendingPairing(pairing);
+      } else acceptPairing(pairing);
     } catch (err) {
       setError((err as Error).message);
     }
+  }
+  function acceptPairing(pairing: NonNullable<typeof initial.pairing>) {
+    setPendingPairing(null);
+    setSecret(pairing.secret);
+    setRelay(pairing.relay);
+    setStun(pairing.stun);
+    setRemember(pairing.secret === saved?.secret);
+    setRunning(secure);
+    // Reopening the same code must also rebuild the session reset by hashchange.
+    setGeneration((value) => value + 1);
   }
   function startParent() {
     try {
@@ -390,6 +416,17 @@ export function App() {
                   <button
                     class="menu-row"
                     onClick={() => {
+                      setShowCode((value) => !value);
+                      close();
+                    }}
+                  >
+                    <Icon name="scan" size={20} /> {showCode ? 'Hide pairing code' : 'Show pairing code'}
+                  </button>
+                )}
+                {role === 'baby' && running && (
+                  <button
+                    class="menu-row"
+                    onClick={() => {
                       retry();
                       close();
                     }}
@@ -426,8 +463,8 @@ export function App() {
                   </summary>
                   <div class="menu-content">
                     <p>
-                      Keep the baby phone open and unlocked. Its screen dims after connecting; tap
-                      to wake the controls.
+                      Keep the baby phone open and unlocked. Use Dim screen to darken its display;
+                      tap to show the controls again.
                     </p>
                     <p>
                       On the parent, turn your phone for landscape. Turn off Portrait Orientation
@@ -443,7 +480,8 @@ export function App() {
                     </p>
                     <p>
                       Remembering a camera saves its private pairing key on this phone until you
-                      forget it. A new baby code needs a new scan.
+                      forget it. Forgetting does not revoke copied links or a lost phone.
+                      Use New pairing code on the baby phone to revoke the old code.
                     </p>
                   </div>
                 </details>
@@ -537,6 +575,16 @@ export function App() {
         ) : role === 'baby' ? (
           running ? (
             <>
+              {joinRejected && (
+                <div class="notice" role="alert">
+                  <p>
+                    The relay reported another device trying to join. If this wasn’t you,
+                    create a new pairing code and scan it with your parent phone.
+                  </p>
+                  <button class="text-button" onClick={retry}>New pairing code</button>
+                  <button class="text-button" onClick={() => setJoinRejected(false)}>Dismiss</button>
+                </div>
+              )}
               {capture !== 'live' && (
                 <p class="notice" data-capture={capture}>
                   {capture === 'paused'
@@ -544,20 +592,21 @@ export function App() {
                     : 'Restarting camera and microphone…'}
                 </p>
               )}
-              <div class={`monitor-layout ${paired ? 'is-paired' : ''}`}>
+              <div class={`monitor-layout ${!showCode ? 'is-paired' : ''}`}>
                 <div class="baby-picture">
                   <Video stream={local} local />
                   {paired && (
                     <div class="baby-tools">
-                      <NightMode connected={paired && capture === 'live' && !optionsOpen} />
+                      <NightMode connected={paired && capture === 'live' && !optionsOpen && !showCode && !joinRejected} />
                     </div>
                   )}
                 </div>
-                {!paired && (
+                {showCode && (
                   <aside class="pairing-panel">
                     <h1>Pair your phones.</h1>
                     <p>Scan with your other phone.</p>
                     <PairingCode url={pairingUrl(secret, relay, pageUrl, stun)} />
+                    <p>Anyone with this code can connect. Only share it with your parent device.</p>
                   </aside>
                 )}
               </div>
@@ -575,6 +624,20 @@ export function App() {
               </button>
             </div>
           )
+        ) : pendingPairing ? (
+          <div class="setup-panel">
+            <h1>This code uses different servers.</h1>
+            <p>
+              Their operators can see your IP address and connection timing. Continue only if
+              these match the settings on your baby phone.
+            </p>
+            <p>Relay: {pendingPairing.relay}</p>
+            <p>STUN: {pendingPairing.stun || 'Off'}</p>
+            <button class="button" disabled={!secure} onClick={() => acceptPairing(pendingPairing)}>
+              Use these servers
+            </button>
+            <button class="text-button" onClick={reset}>Cancel</button>
+          </div>
         ) : running ? (
           <>
             <ParentViewer

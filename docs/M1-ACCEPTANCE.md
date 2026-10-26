@@ -11,8 +11,9 @@ Use a stable HTTPS origin and keep both devices powered.
    audible sound, and sound-meter response.
 2. **View:** check rotation, fullscreen/expanded view, and supported PiP. Repeat
    from the Home Screen app; record unsupported features honestly.
-3. **Night mode:** let the baby screen dim; confirm capture continues and
-   tapping restores controls. Check the wake-lock status.
+3. **Night mode:** leave the baby unit untouched and confirm its screen does not
+   dim itself. Dim it manually, confirm capture continues, and tap to restore
+   controls. Check the wake-lock status.
 4. **Reconnect:** toggle Wi-Fi on each device separately. Verify a visible
    interruption and recovery without rescanning or stale media appearing live.
 5. **Interrupt capture:** take a call or background the baby app. Confirm the

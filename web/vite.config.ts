@@ -7,6 +7,7 @@ if (Boolean(cert) !== Boolean(key)) throw new Error('Set both HTTPS_CERT and HTT
 
 export default defineConfig({
   base: './',
+  build: { sourcemap: false },
   plugins: [
     {
       name: 'development-style-policy',

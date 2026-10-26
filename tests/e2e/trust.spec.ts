@@ -18,6 +18,64 @@ async function observePeers(page: Page) {
 
 const video = (page: Page) => page.getByLabel('Live baby video');
 
+test('a link cannot contact a different relay until its servers are approved', async ({ page: baby, browser }) => {
+  const link = new URL(await startBaby(baby));
+  const params = new URLSearchParams(link.hash.slice(1));
+  params.set('r', 'wss://other.invalid/relay');
+  params.set('s', 'stun:other.invalid:3478');
+  link.hash = params.toString();
+  const context = await browser.newContext();
+  try {
+    const parent = await context.newPage();
+    let contacted = 0;
+    await parent.routeWebSocket('wss://other.invalid/relay', (socket) => {
+      contacted++;
+      socket.close();
+    });
+    await parent.goto(link.href);
+    await expect(parent.getByRole('heading', { name: 'This code uses different servers.' })).toBeVisible();
+    expect(new URL(parent.url()).hash).toBe('');
+    expect(contacted).toBe(0);
+    await expect(parent.getByText('Relay: wss://other.invalid/relay', { exact: true })).toBeVisible();
+    await parent.getByRole('button', { name: 'Cancel', exact: true }).click();
+    expect(contacted).toBe(0);
+    // Pasted links and fragment-only navigation must enforce the same gate.
+    await parent.getByRole('button', { name: /Parent unit/ }).click();
+    await parent.getByText('Have a pairing link?', { exact: true }).click();
+    await parent.getByLabel('Pairing link', { exact: true }).fill(link.href);
+    await parent.getByRole('button', { name: 'Use pairing link', exact: true }).click();
+    await expect(parent.getByRole('button', { name: 'Use these servers' })).toBeVisible();
+    expect(contacted).toBe(0);
+    await parent.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await parent.evaluate((hash) => { location.hash = hash; }, link.hash);
+    await expect(parent.getByRole('button', { name: 'Use these servers' })).toBeVisible();
+    expect(contacted).toBe(0);
+    await parent.getByRole('button', { name: 'Use these servers' }).click();
+    await expect.poll(() => contacted).toBeGreaterThan(0);
+  } finally {
+    await context.close();
+  }
+});
+
+test('a different STUN operator waits for approval before connecting to the ordinary relay', async ({ page: baby, browser }) => {
+  const link = new URL(await startBaby(baby));
+  const params = new URLSearchParams(link.hash.slice(1));
+  params.set('s', 'stun:other.invalid:3478');
+  link.hash = params.toString();
+  const context = await browser.newContext();
+  try {
+    const parent = await context.newPage();
+    const sockets: string[] = [];
+    parent.on('websocket', (socket) => { if (socket.url().includes('/relay')) sockets.push(socket.url()); });
+    await parent.goto(link.href);
+    await expect(parent.getByRole('button', { name: 'Use these servers' })).toBeVisible();
+    expect(sockets).toEqual([]);
+    await expect(baby.getByRole('status')).toHaveText('Waiting for the other device');
+  } finally {
+    await context.close();
+  }
+});
+
 async function connect(baby: Page, parent: Page, link: string) {
   await parent.goto(link);
   await expect(parent.getByRole('status')).toHaveText('Connected', { timeout: 20_000 });

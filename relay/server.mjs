@@ -1,6 +1,29 @@
 import { createServer } from 'node:http';
+import { isIP } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
+
+const HSTS = 'max-age=31536000';
+const DEFAULT_ORIGINS = [
+  'https://bambi.cam',
+  ...['localhost', '127.0.0.1'].flatMap((host) =>
+    [5173, 4173, 8080].map((port) => `http://${host}:${port}`)),
+];
+
+// Canonicalize IPv4-mapped addresses and group IPv6 by /64, so alternate
+// spellings and rotating addresses on one ordinary IPv6 subnet share a cap.
+function sourceKey(address) {
+  const family = typeof address === 'string' ? isIP(address) : 0;
+  if (family === 4) return address;
+  if (family !== 6 || address.includes('%')) return null;
+  const canonical = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+  const [left, right] = canonical.split('::').map((part) => part ? part.split(':') : []);
+  const parts = right ? [...left, ...Array(8 - left.length - right.length).fill('0'), ...right] : left;
+  const words = parts.map((part) => parseInt(part, 16));
+  if (words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff)
+    return [words[6] >> 8, words[6] & 255, words[7] >> 8, words[7] & 255].join('.');
+  return `${words.slice(0, 4).map((word) => word.toString(16)).join(':')}::/64`;
+}
 
 // The relay understands room IDs and control messages, never encrypted payloads.
 export function createRelay({
@@ -8,13 +31,35 @@ export function createRelay({
   maxConnections = 2048,
   maxUpgradesPerWindow = 60,
   upgradeWindowMs = 1000,
+  maxConnectionsPerSource = 32,
+  maxRoomsPerSource = 16,
+  maxUpgradesPerSource = 120,
+  sourceWindowMs = 60_000,
+  maxSources = 4096,
+  allowedOrigins = DEFAULT_ORIGINS,
+  // Opt in only behind an edge that overwrites X-Real-IP and prevents bypass.
+  trustProxy = false,
   maxBytesPerSecond = 256 * 1024,
+  maxBufferedBytes = 64 * 1024,
+  maxTotalBufferedBytes = 8 * 1024 * 1024,
   joinTimeoutMs = 5000,
+  aloneTimeoutMs = 10 * 60 * 1000,
   heartbeatMs = 30_000,
   shutdownTimeoutMs = 3000,
 } = {}) {
   const rooms = new Map();
+  const roomOwners = new WeakMap();
+  const rejectedNotices = new WeakMap();
+  const sources = new Map();
+  const origins = new Set(allowedOrigins);
+  for (const origin of origins) {
+    const url = new URL(origin);
+    if (!['http:', 'https:'].includes(url.protocol) || url.origin !== origin)
+      throw new Error('Allowed origins must be exact http(s) origins without paths.');
+  }
+  if (!origins.size) throw new Error('At least one allowed origin is required.');
   const sockets = new Set();
+  let bufferedBytes = 0;
   let closing;
   let upgrades = 0;
   let upgradeWindowStart = performance.now();
@@ -24,6 +69,7 @@ export function createRelay({
       'Content-Type': 'text/plain',
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
+      'Strict-Transport-Security': HSTS,
     });
     res.end(healthy ? 'ok\n' : 'Not found\n');
   });
@@ -41,32 +87,78 @@ export function createRelay({
     perMessageDeflate: false,
     closeTimeout: 2000,
   });
+  wss.on('headers', (headers) => headers.push(`Strict-Transport-Security: ${HSTS}`));
+  function pruneSources() {
+    const now = performance.now();
+    for (const [key, source] of sources) {
+      if (!source.connections && !source.rooms && now - source.windowStart >= sourceWindowMs)
+        sources.delete(key);
+    }
+  }
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => {});
     const reject = (status) => {
-      socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\nRetry-After: 1\r\n\r\n`);
+      socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\nRetry-After: 1\r\nStrict-Transport-Security: ${HSTS}\r\n\r\n`);
       socket.setTimeout(1000, () => socket.destroy());
     };
+    if (req.url !== '/relay') return reject('404 Not Found');
+    // This blocks drive-by browser connections, not non-browser impersonation.
+    if (!origins.has(req.headers.origin)) return reject('403 Forbidden');
     if (closing || wss.clients.size >= maxConnections) return reject('503 Service Unavailable');
     if (performance.now() - upgradeWindowStart >= upgradeWindowMs) {
       upgradeWindowStart = performance.now();
       upgrades = 0;
     }
-    // Global rather than per-IP: no forwarded-IP trust or retained IP counters.
+    // Bound the source table as well as total work under a distributed flood.
+    const key = sourceKey(trustProxy ? req.headers['x-real-ip'] : req.socket.remoteAddress);
+    if (!key) return reject('400 Bad Request');
+    let source = sources.get(key);
+    if (!source) {
+      if (sources.size >= maxSources) pruneSources();
+      if (sources.size >= maxSources) return reject('503 Service Unavailable');
+      source = { connections: 0, rooms: 0, upgrades: 0, windowStart: performance.now() };
+      sources.set(key, source);
+    }
+    if (performance.now() - source.windowStart >= sourceWindowMs) {
+      source.upgrades = 0;
+      source.windowStart = performance.now();
+    }
+    if (++source.upgrades > maxUpgradesPerSource || source.connections >= maxConnectionsPerSource)
+      return reject('429 Too Many Requests');
+    // A throttled source must not keep consuming everyone else's allowance.
     if (++upgrades > maxUpgradesPerWindow) return reject('429 Too Many Requests');
-    if (req.url !== '/relay') return reject('404 Not Found');
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws));
+    source.connections++;
+    socket.once('close', () => source.connections--);
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, source));
   });
+  function send(ws, data, binary = false) {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const size = Buffer.byteLength(data) + 10; // Largest unmasked frame header.
+    if (ws.bufferedAmount + size > maxBufferedBytes + 10 || bufferedBytes + size > maxTotalBufferedBytes) {
+      // Do not queue a close frame behind an already stalled receiver.
+      ws.terminate();
+      return;
+    }
+    bufferedBytes += size;
+    ws.send(data, { binary }, () => { bufferedBytes -= size; });
+  }
   const control = (ws, type) => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type }));
+    send(ws, JSON.stringify({ type }));
   };
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, source) => {
     let roomId;
     let alive = true;
     let messages = 0;
     let bytes = 0;
     let windowStart = performance.now();
+    let aloneTimer;
+    ws.stopWaiting = () => clearTimeout(aloneTimer);
+    ws.waitForPeer = () => {
+      clearTimeout(aloneTimer);
+      aloneTimer = setTimeout(() => ws.close(1013, 'Waiting for peer timed out'), aloneTimeoutMs);
+      aloneTimer.unref();
+    };
     const joinTimer = setTimeout(() => ws.close(1008, 'Join required'), joinTimeoutMs);
     joinTimer.unref();
     ws.on('error', () => {}); // Transport errors are followed by close; never log payloads.
@@ -104,37 +196,58 @@ export function createRelay({
         ) {
           return ws.close(1008, 'Invalid room');
         }
-        const room = rooms.get(join.join) ?? new Set();
-        if (room.size >= 2) return ws.close(1008, 'Room full');
-        if (!rooms.has(join.join) && rooms.size >= maxRooms) return ws.close(1013, 'Relay busy');
+        let room = rooms.get(join.join);
+        if (room?.size >= 2) {
+          // Relay controls are advisory, not proof that a third peer has the key.
+          const now = performance.now();
+          if (now - (rejectedNotices.get(room) ?? -Infinity) >= 10_000) {
+            rejectedNotices.set(room, now);
+            for (const peer of room) control(peer, 'peer-rejected');
+          }
+          return ws.close(1008, 'Room full');
+        }
+        if (!room) {
+          if (rooms.size >= maxRooms || source.rooms >= maxRoomsPerSource)
+            return ws.close(1013, 'Relay busy');
+          room = new Set();
+          roomOwners.set(room, source);
+          source.rooms++;
+        }
         roomId = join.join;
         room.add(ws);
         rooms.set(roomId, room);
         clearTimeout(joinTimer);
         control(ws, 'joined');
-        if (room.size === 2) for (const peer of room) control(peer, 'peer-joined');
+        if (room.size === 2) for (const peer of room) {
+          peer.stopWaiting();
+          control(peer, 'peer-joined');
+        }
+        else ws.waitForPeer();
         return;
       }
       if (!binary) return ws.close(1008, 'Binary signals required');
       for (const peer of rooms.get(roomId) ?? []) {
         if (peer === ws || peer.readyState !== WebSocket.OPEN) continue;
-        if (peer.bufferedAmount > 256 * 1024) {
-          peer.close(1013, 'Slow receiver');
-          continue;
-        }
-        peer.send(data, { binary: true });
+        send(peer, data, true);
       }
     });
     ws.on('close', () => {
       clearTimeout(joinTimer);
+      ws.stopWaiting();
       const room = rooms.get(roomId);
       if (!room) return;
       room.delete(ws);
-      if (!room.size) rooms.delete(roomId);
-      else for (const peer of room) control(peer, 'peer-left');
+      if (!room.size) {
+        rooms.delete(roomId);
+        roomOwners.get(room).rooms--;
+      } else for (const peer of room) {
+        control(peer, 'peer-left');
+        peer.waitForPeer();
+      }
     });
   });
   const heartbeat = setInterval(() => {
+    pruneSources();
     for (const ws of wss.clients) {
       if (!ws.isAlive()) {
         ws.terminate();
@@ -171,7 +284,12 @@ export function createRelay({
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const relay = createRelay();
+  if (process.env.RELAY_TRUST_PROXY && !['true', 'false'].includes(process.env.RELAY_TRUST_PROXY))
+    throw new Error('RELAY_TRUST_PROXY must be true or false.');
+  const relay = createRelay({
+    allowedOrigins: process.env.RELAY_ALLOWED_ORIGINS?.split(',').map((origin) => origin.trim()),
+    trustProxy: process.env.RELAY_TRUST_PROXY === 'true',
+  });
   const port = Number(process.env.PORT || 8787);
   relay.server.listen(port, process.env.HOST || '127.0.0.1', () =>
     console.log(`bambicam relay listening on port ${port}`),

@@ -7,10 +7,20 @@ import {
   derivePairing,
   fromBase64Url,
   newSecret,
+  needsServerApproval,
   pairingUrl,
   parsePairing,
   validateRelay,
 } from '../web/src/signal/pairing';
+
+test('pairing requires approval before introducing a different relay or STUN operator', () => {
+  const trusted = { relay: 'wss://relay.example/relay', stun: DEFAULT_STUN };
+  assert.equal(needsServerApproval(trusted, trusted), false);
+  assert.equal(needsServerApproval({ ...trusted, stun: '' }, trusted), false);
+  assert.equal(needsServerApproval({ ...trusted, relay: 'wss://other.example/relay' }, trusted), true);
+  assert.equal(needsServerApproval({ ...trusted, stun: 'stun:other.example:3478' }, trusted), true);
+  assert.equal(needsServerApproval(trusted, { ...trusted, stun: '' }), true);
+});
 
 async function pair() {
   const { key } = await derivePairing(newSecret());

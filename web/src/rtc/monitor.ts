@@ -14,6 +14,7 @@ interface Options {
   onStream: (stream: MediaStream | null) => void;
   onPath?: (path: Path | null) => void;
   onError: (message: string) => void;
+  onJoinRejected?: () => void;
 }
 export interface MonitorHandle {
   close: () => void;
@@ -120,7 +121,7 @@ export async function connectMonitor(options: Options): Promise<MonitorHandle> {
       } else
         reconnect(
           event.reason === 'Room full'
-            ? 'This baby unit is busy. Close its other parent tab. Retrying while old connections clear.'
+            ? 'This baby unit is busy: another parent is connected. If you do not recognize it, use New pairing code on the baby phone. Retrying automatically.'
             : 'The relay connection was lost. Reconnecting automatically; keep both apps open.',
         );
     };
@@ -133,6 +134,7 @@ export async function connectMonitor(options: Options): Promise<MonitorHandle> {
       try {
         const message = JSON.parse(data);
         if (message.type === 'joined') waitForPeer();
+        else if (message.type === 'peer-rejected') options.onJoinRejected?.();
         else if (message.type === 'peer-left') {
           dropPeer();
           notice = 'The other device left. Waiting for it to return; keep both apps open.';

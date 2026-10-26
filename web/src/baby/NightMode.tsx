@@ -7,10 +7,7 @@ export function NightMode({ connected }: { connected: boolean }) {
   const button = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    setDimmed(false);
-    if (!connected) return;
-    const timer = setTimeout(() => setDimmed(true), 15_000);
-    return () => clearTimeout(timer);
+    if (!connected) setDimmed(false);
   }, [connected]);
   useEffect(() => {
     if (dimmed && connected) dialog.current?.showModal();

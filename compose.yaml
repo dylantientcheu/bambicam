@@ -4,6 +4,9 @@ services:
       context: .
       dockerfile: relay/Dockerfile
     restart: unless-stopped
+    environment:
+      RELAY_ALLOWED_ORIGINS: ${BAMBICAM_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
+      RELAY_TRUST_PROXY: 'true'
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

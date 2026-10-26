@@ -32,10 +32,16 @@ to the clipboard or application used to share it.
   parent's localStorage, only after opt-in. **Forget baby unit** deletes that
   entry. Clearing site data also removes it. Storage belongs to that app origin
   and may differ between Safari and an installed Home Screen app.
+- Remembered keys are not encrypted at rest. Someone with access to the unlocked
+  browser or an extension with site access may read them. Forgetting only removes
+  the local copy; **New pairing code** on the baby revokes all old copies.
 - The relay keeps rooms/sockets in memory, deletes empty rooms, and has no
   database or persistent volume. It has no application logging of payloads,
   room IDs, pairing secrets, SDP, ICE candidates, or individual requests. Caddy
   access logging is not enabled in the supplied configuration.
+- Source abuse counters use IPv4 addresses or IPv6 /64 prefixes only in memory,
+  without logging them. Entries expire after the one-minute rate window once no
+  associated connections or rooms remain (cleanup runs every 30 seconds).
 - Hosting providers can collect connection/request metadata independently of
   application logs. Railway exposes HTTP logs, including client IP, path,
   status and timing. Retention depends on provider policy and account settings;

@@ -15,7 +15,10 @@ const sockets = [];
 try {
   const room = randomBytes(16).toString('hex');
   for (let i = 0; i < 2; i++) {
-    const ws = new WebSocket(url, { handshakeTimeout: 10_000 });
+    const ws = new WebSocket(url, {
+      handshakeTimeout: 10_000,
+      origin: process.env.BAMBICAM_ORIGIN || 'http://localhost:8080',
+    });
     sockets.push(ws);
     await once(ws, 'open', { signal });
     const joined = once(ws, 'message', { signal });

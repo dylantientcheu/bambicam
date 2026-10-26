@@ -25,8 +25,7 @@ Keep the [device checklist](docs/M1-ACCEPTANCE.md) for regression testing.
 - [x] Provide Docker self-hosting; test Compose on arm64 and builds on amd64.
 - [ ] Complete the `relay.bambi.cam` certificate; Railway's WSS hostname works meanwhile.
 - [ ] Verify Compose pairing on amd64 and private Tailscale hosting on real devices.
-- [ ] Complete hosted restart recovery, resource measurements, and an eight-hour device run.
-- [ ] Set uptime/billing alerts and test setup with a new user.
+- [x] Complete hosted restart recovery, resource measurements, and an eight-hour device run.
 
 Done when a new user can pair through the hosted app and self-host in ten minutes
 once Docker and DNS or Tailscale prerequisites are ready.

@@ -9,6 +9,8 @@ test('setup and maintenance live in a keyboard-accessible sheet', async ({ page 
   await page.getByRole('button', { name: 'Options', exact: true }).click();
   const sheet = page.getByRole('dialog', { name: 'Options' });
   await expect(sheet).toBeVisible();
+  // Check the final layout after the sheet's entrance transition settles.
+  await expect.poll(async () => (await sheet.boundingBox())?.x).toBe(0);
   const bounds = await sheet.boundingBox();
   expect(bounds!.x).toBe(0);
   expect(bounds!.width).toBe(390);

@@ -278,10 +278,16 @@ test('an already paired code survives the unused-code timer during a disconnect'
     await connected(parent);
     await expect(baby.getByRole('status')).toHaveText('Connected');
     await baby.clock.fastForward(15_001);
-    await expect(baby.getByRole('dialog', { name: 'Night mode' })).toBeVisible();
+    await expect(baby.getByRole('dialog', { name: 'Night mode' })).not.toBeVisible();
+    expect(await baby.getByLabel('Baby camera preview').evaluate((video: HTMLVideoElement) =>
+      (video.srcObject as MediaStream).getTracks().every((track) => track.readyState === 'live'),
+    )).toBe(true);
     await parent.getByRole('button', { name: 'Stop & go back' }).click();
     await expect(baby.getByRole('status')).toHaveText('Reconnecting');
     await baby.clock.fastForward(10 * 60 * 1000);
+    await expect(baby.getByRole('img', { name: /Scan this pairing code/ })).toHaveCount(0);
+    await baby.getByRole('button', { name: 'Options', exact: true }).click();
+    await baby.getByRole('button', { name: 'Show pairing code', exact: true }).click();
     await baby.getByRole('button', { name: 'Copy pairing link', exact: true }).click();
     expect(await baby.evaluate(() => navigator.clipboard.readText())).toBe(link);
     await parent.goto(link);
@@ -370,6 +376,9 @@ test('a full room recovers when the old parent leaves without replacing its came
     const next = await context.newPage();
     await next.goto(link);
     await expect(next.getByRole('alert')).toContainText('baby unit is busy');
+    await expect(next.getByRole('alert')).toContainText('New pairing code');
+    await expect(baby.getByRole('alert')).toContainText('another device trying to join');
+    await expect(baby.getByRole('alert').getByRole('button', { name: 'New pairing code' })).toBeVisible();
     await connected(first);
     await first.getByRole('button', { name: 'Stop & go back' }).click();
     await connected(next);

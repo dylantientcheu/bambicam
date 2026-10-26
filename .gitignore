@@ -19,4 +19,4 @@ coverage/
 *.pfx
 
 # Detailed working roadmap stays on this machine.
-/PLAN.local.md
+*.local.md

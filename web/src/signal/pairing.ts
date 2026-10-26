@@ -82,6 +82,14 @@ export function defaultRelay(pageUrl: string): string {
   return url.href;
 }
 
+export function needsServerApproval(
+  pairing: { relay: string; stun: string },
+  trusted: { relay: string; stun: string },
+): boolean {
+  // Turning STUN off introduces no new recipient of network metadata.
+  return pairing.relay !== trusted.relay || (pairing.stun !== '' && pairing.stun !== trusted.stun);
+}
+
 export function pairingUrl(
   secret: string,
   relay: string,

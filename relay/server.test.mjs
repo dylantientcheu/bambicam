@@ -14,8 +14,10 @@ async function setup(t, options) {
   t.after(() => relay.close());
   return { ...relay, url: `ws://127.0.0.1:${relay.server.address().port}/relay` };
 }
-async function open(url) {
-  const ws = new WebSocket(url);
+const ORIGIN = 'http://localhost:5173';
+
+async function open(url, options = {}) {
+  const ws = new WebSocket(url, { origin: ORIGIN, ...options });
   await once(ws, 'open');
   return ws;
 }
@@ -28,13 +30,15 @@ async function join(ws, room = 'a'.repeat(32)) {
   assert.equal(await message, 'joined');
 }
 
-function rejectedUpgrade(url) {
+function rejectedUpgrade(url, headers = {}) {
   return new Promise((resolve, reject) => {
     const request = get(url.replace('ws:', 'http:'), {
-      headers: {
+      headers: Object.fromEntries(Object.entries({
+        Origin: ORIGIN,
         Connection: 'Upgrade', Upgrade: 'websocket',
         'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': randomBytes(16).toString('base64'),
-      },
+        ...headers,
+      }).filter(([, value]) => value !== undefined)),
     }, (response) => {
       response.resume();
       resolve(response.statusCode);
@@ -56,11 +60,13 @@ test('two peers join, a third is refused, binary bytes are unchanged, and empty 
   await join(parent);
   assert.equal(await peerJoined, 'peer-joined');
   const third = await open(relay.url);
+  const rejectedNotices = [nextControl(baby), nextControl(parent)];
   const thirdClosed = once(third, 'close');
   third.send(JSON.stringify({ join: 'a'.repeat(32) }));
   const [code, reason] = await thirdClosed;
   assert.equal(code, 1008);
   assert.equal(reason.toString(), 'Room full');
+  assert.deepEqual(await Promise.all(rejectedNotices), ['peer-rejected', 'peer-rejected']);
   const received = once(parent, 'message');
   const payload = Buffer.from([0, 1, 2, 255, 43]);
   baby.send(payload);
@@ -164,8 +170,170 @@ test('health exposes no rooms and only the exact relay path accepts upgrades', a
   assert.equal(health.status, 200);
   assert.equal(await health.text(), 'ok\n');
   assert.equal(health.headers.get('cache-control'), 'no-store');
+  assert.equal(health.headers.get('strict-transport-security'), 'max-age=31536000');
   assert.equal(await rejectedUpgrade(`${relay.url}?room=private`), 404);
   assert.equal(await rejectedUpgrade(relay.url.replace('/relay', '/other')), 404);
+});
+
+test('only exact allowed origins can upgrade, before spending the global upgrade budget', async (t) => {
+  const relay = await setup(t, { allowedOrigins: ['https://monitor.example'], maxUpgradesPerWindow: 1 });
+  for (const Origin of [undefined, 'null', ORIGIN, 'https://monitor.example.evil', 'https://monitor.example/'])
+    assert.equal(await rejectedUpgrade(relay.url, { Origin }), 403);
+  const ws = await open(relay.url, { origin: 'https://monitor.example' });
+  await join(ws);
+  for (const allowedOrigins of [[], ['*'], ['https://monitor.example/path'], ['https://user@monitor.example']])
+    assert.throws(() => createRelay({ allowedOrigins }));
+});
+
+test('direct clients cannot bypass source caps by forging proxy headers; close frees capacity', async (t) => {
+  const relay = await setup(t, { maxConnectionsPerSource: 1 });
+  const first = await open(relay.url, { headers: { 'X-Real-IP': '192.0.2.1' } });
+  await join(first);
+  assert.equal(await rejectedUpgrade(relay.url, { 'X-Real-IP': '192.0.2.2', 'X-Forwarded-For': '192.0.2.3' }), 429);
+  const serverSocket = [...relay.rooms.values()][0].values().next().value;
+  const closed = once(serverSocket._socket, 'close');
+  first.close();
+  await closed;
+  const replacement = await open(relay.url);
+  await join(replacement);
+});
+
+test('explicit proxy mode requires a single valid IP and groups equivalent addresses and IPv6 subnets', async (t) => {
+  const relay = await setup(t, { trustProxy: true, maxConnectionsPerSource: 1 });
+  for (const value of [undefined, 'unknown', '192.0.2.1, 192.0.2.2', '[2001:db8::1]', 'fe80::1%eth0'])
+    assert.equal(await rejectedUpgrade(relay.url, { 'X-Real-IP': value }), 400);
+  await open(relay.url, { headers: { 'X-Real-IP': '192.0.2.1' } });
+  assert.equal(await rejectedUpgrade(relay.url, { 'X-Real-IP': '::ffff:192.0.2.1' }), 429);
+  await open(relay.url, { headers: { 'X-Real-IP': '192.0.2.2' } });
+  await open(relay.url, { headers: { 'X-Real-IP': '2001:db8:1::1' } });
+  assert.equal(await rejectedUpgrade(relay.url, { 'X-Real-IP': '2001:0db8:0001:0000:ffff::2' }), 429);
+  await open(relay.url, { headers: { 'X-Real-IP': '2001:db8:2::1' } });
+});
+
+test('a throttled source cannot consume the global allowance for other sources', async (t) => {
+  const relay = await setup(t, {
+    trustProxy: true, maxUpgradesPerSource: 1, maxUpgradesPerWindow: 2,
+  });
+  const headers = { 'X-Real-IP': '192.0.2.1' };
+  const first = await open(relay.url, { headers });
+  await join(first);
+  for (let i = 0; i < 3; i++) assert.equal(await rejectedUpgrade(relay.url, headers), 429);
+  const other = await open(relay.url, { headers: { 'X-Real-IP': '192.0.2.2' } });
+  await join(other);
+});
+
+test('room creation is capped per source while existing rooms remain joinable and slots are reclaimed', async (t) => {
+  const relay = await setup(t, { trustProxy: true, maxRoomsPerSource: 1 });
+  const sourceA = { headers: { 'X-Real-IP': '192.0.2.1' } };
+  const sourceB = { headers: { 'X-Real-IP': '192.0.2.2' } };
+  const first = await open(relay.url, sourceA);
+  await join(first);
+  const secondRoom = await open(relay.url, sourceB);
+  await join(secondRoom, 'b'.repeat(32));
+  const refused = await open(relay.url, sourceA);
+  const refusedClosed = once(refused, 'close');
+  refused.send(JSON.stringify({ join: 'c'.repeat(32) }));
+  assert.equal((await refusedClosed)[0], 1013);
+  const peer = await open(relay.url, sourceA);
+  await join(peer, 'b'.repeat(32));
+  const roomClosed = once([...relay.rooms.get('a'.repeat(32))][0], 'close');
+  first.close();
+  await roomClosed;
+  const replacement = await open(relay.url, sourceA);
+  await join(replacement, 'c'.repeat(32));
+});
+
+test('source churn stays rate limited after disconnect, and idle source records expire in a bounded table', async (t) => {
+  const relay = await setup(t, {
+    trustProxy: true, maxSources: 1, maxUpgradesPerSource: 1, sourceWindowMs: 100,
+  });
+  const headers = { 'X-Real-IP': '192.0.2.1' };
+  const first = await open(relay.url, { headers });
+  await join(first);
+  const closed = once([...relay.rooms.values()][0].values().next().value._socket, 'close');
+  first.close();
+  await closed;
+  assert.equal(await rejectedUpgrade(relay.url, headers), 429);
+  assert.equal(await rejectedUpgrade(relay.url, { 'X-Real-IP': '192.0.2.2' }), 503);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const next = await open(relay.url, { headers: { 'X-Real-IP': '192.0.2.2' } });
+  await join(next);
+});
+
+test('a lone socket expires despite pongs and signaling; a paired room is not expired', async (t) => {
+  const relay = await setup(t, { aloneTimeoutMs: 150, heartbeatMs: 30 });
+  const alone = await open(relay.url);
+  await join(alone);
+  const chatter = setInterval(() => {
+    if (alone.readyState === WebSocket.OPEN) alone.send(Buffer.from('keepalive'));
+  }, 20);
+  t.after(() => clearInterval(chatter));
+  const [code, reason] = await once(alone, 'close');
+  assert.equal(code, 1013);
+  assert.equal(reason.toString(), 'Waiting for peer timed out');
+  const baby = await open(relay.url);
+  await join(baby, 'b'.repeat(32));
+  const parent = await open(relay.url);
+  await join(parent, 'b'.repeat(32));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(baby.readyState, WebSocket.OPEN);
+  assert.equal(parent.readyState, WebSocket.OPEN);
+  const parentClosed = once(parent, 'close');
+  baby.close();
+  assert.equal((await parentClosed)[0], 1013);
+});
+
+test('a maximum-size frame passes but an additional frame cannot overfill a slow receiver', async (t) => {
+  const relay = await setup(t);
+  const baby = await open(relay.url);
+  await join(baby);
+  const parent = await open(relay.url);
+  const joined = nextControl(baby);
+  await join(parent);
+  await joined;
+  await new Promise((resolve) => setImmediate(resolve));
+  const received = once(parent, 'message');
+  const payload = Buffer.alloc(64 * 1024, 7);
+  baby.send(payload);
+  assert.deepEqual((await received)[0], payload);
+  const serverParent = [...[...relay.rooms.values()][0]][1];
+  Object.defineProperty(serverParent, 'bufferedAmount', { get: () => 64 * 1024 - 100 });
+  const closed = once(parent, 'close');
+  baby.send(Buffer.alloc(101));
+  assert.equal((await closed)[0], 1006);
+});
+
+test('aggregate send buffering is capped across rooms and released when writes finish', async (t) => {
+  const relay = await setup(t, { maxTotalBufferedBytes: 128 });
+  const pairs = [];
+  for (const id of ['a', 'b']) {
+    const sender = await open(relay.url);
+    await join(sender, id.repeat(32));
+    const receiver = await open(relay.url);
+    const joined = nextControl(sender);
+    await join(receiver, id.repeat(32));
+    await joined;
+    pairs.push([sender, receiver]);
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  const serverReceiver = [...relay.rooms.get('a'.repeat(32))][1];
+  const send = serverReceiver.send.bind(serverReceiver);
+  let release;
+  serverReceiver.send = (data, options, callback) => send(data, options, (error) => {
+    if (options.binary) release = () => callback(error);
+    else callback(error);
+  });
+  const first = once(pairs[0][1], 'message');
+  pairs[0][0].send(Buffer.alloc(64));
+  await first;
+  const closed = once(pairs[1][1], 'close');
+  pairs[1][0].send(Buffer.alloc(64));
+  assert.equal((await closed)[0], 1006);
+  release();
+  serverReceiver.send = send;
+  const next = once(pairs[0][1], 'message');
+  pairs[0][0].send(Buffer.alloc(64, 1));
+  assert.deepEqual((await next)[0], Buffer.alloc(64, 1));
 });
 
 test('shutdown is idempotent and closes incomplete HTTP requests within a bound', async (t) => {
