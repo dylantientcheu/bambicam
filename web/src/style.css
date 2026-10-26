@@ -180,9 +180,10 @@ main {
 }
 .privacy-note {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   align-items: center;
-  gap: 7px;
+  gap: 0 18px;
   margin-top: 28px;
   font-size: 12px;
 }

@@ -525,6 +525,13 @@ export function App() {
               >
                 <Icon name="lock" size={15} /> Privacy first.
               </a>
+              <a
+                href="https://github.com/dylantientcheu/bambicam"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Open source on GitHub <Icon name="arrow-up-right" size={15} />
+              </a>
             </p>
           </div>
         ) : role === 'baby' ? (
