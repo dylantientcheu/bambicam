@@ -8,6 +8,7 @@ export function Video({
   status,
   notice,
   videoRef,
+  audioOnly = false,
 }: {
   stream: MediaStream | null;
   local?: boolean;
@@ -15,6 +16,7 @@ export function Video({
   notice?: string;
   /** Optional ref so a parent component can control the same video element. */
   videoRef?: RefObject<HTMLVideoElement | null>;
+  audioOnly?: boolean;
 }) {
   const own = useRef<HTMLVideoElement>(null);
   const video = videoRef ?? own;
@@ -53,21 +55,22 @@ export function Video({
         autoPlay
         playsInline
         muted={local}
-        aria-label={local ? 'Baby camera preview' : 'Live baby video'}
+        aria-label={local ? 'Baby camera preview' : audioOnly ? 'Live baby audio' : 'Live baby video'}
+        style={audioOnly ? { visibility: 'hidden' } : undefined}
       />
-      {!stream && (
+      {(!stream || audioOnly) && (
         <div class="video-placeholder">
           <span class="sleepy-eyes">
             <Icon name="sleep" size={64} />
           </span>
-          <p>{status ?? 'Your little one will appear here.'}</p>
+          <p>{audioOnly && stream ? 'Audio only · camera is off' : status ?? 'Your little one will appear here.'}</p>
           {notice && <p>{notice}</p>}
         </div>
       )}
       {needsPlay && (
         <div class="play-overlay">
           <button class="button" onClick={play}>
-            Play video &amp; sound
+            {audioOnly ? 'Play sound' : 'Play video & sound'}
           </button>
         </div>
       )}

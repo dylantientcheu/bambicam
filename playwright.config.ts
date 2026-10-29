@@ -15,6 +15,10 @@ export default defineConfig({
         '--use-fake-device-for-media-stream',
         '--use-fake-ui-for-media-stream',
         '--autoplay-policy=no-user-gesture-required',
+        // Optional same-machine transport for hosts with unreliable LAN/mDNS
+        // routing between isolated contexts. Physical LAN acceptance is separate.
+        ...(process.env.BAMBICAM_TEST_LOOPBACK === '1'
+          ? ['--allow-loopback-in-peer-connection', '--disable-features=WebRtcHideLocalIpsWithMdns'] : []),
       ],
     },
   },

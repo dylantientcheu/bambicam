@@ -32,6 +32,12 @@ once Docker and DNS or Tailscale prerequisites are ready.
 
 ## Next
 
+Local operation improvements:
+- [x] Preserve established media during signaling outages; retry setup separately.
+- [x] Manual audio-only and reduced-video modes, with continuous microphone capture.
+- [x] Same-network preference, STUN-off Compose defaults, and explicit hosting limits.
+- [ ] Complete physical-device outage/mode/local-start checks in [the checklist](docs/M1-ACCEPTANCE.md).
+
 - **M3:** on-device sound/motion alerts, with explicit browser/background limits.
 - **M4:** explore on-device computer vision without uploading frames.
 - **Later:** push-to-talk, multiple parents with approval, optional user-operated

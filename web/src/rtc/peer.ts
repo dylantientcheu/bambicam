@@ -1,4 +1,5 @@
 import { SecureChannel, type Role, type Signal } from '../signal/crypto';
+import type { CaptureMode } from '../baby/capture';
 
 /** How media travels: directly on one network, directly across networks via
  *  STUN, through a media relay (never configured here), or not yet known. */
@@ -8,6 +9,7 @@ interface Options {
   key: CryptoKey;
   role: Role;
   stream?: MediaStream;
+  mode?: CaptureMode;
   iceServers: RTCIceServer[];
   send: (packet: ArrayBuffer) => void;
   onStream: (stream: MediaStream) => void;
@@ -16,14 +18,19 @@ interface Options {
   onInterrupted: () => void;
   onLost: () => void;
   onInvalid: () => void;
+  onStopped: () => void;
+  onMode?: (mode: CaptureMode) => void;
 }
 
-// Every arrival gets a fresh challenge, including a peer reloading while our
-// relay socket stays open. Old asynchronous work cannot affect its replacement.
+// Every new media connection gets a fresh challenge. Old asynchronous work
+// cannot affect its replacement; signaling-only reconnects retain this peer.
 export function createPeer(options: Options) {
   const channel = new SecureChannel(options.key, options.role);
-  const pc = new RTCPeerConnection({ iceServers: options.iceServers });
+  const pc = new RTCPeerConnection({ iceServers: options.iceServers, bundlePolicy: 'max-bundle' });
   const remote = new MediaStream();
+  // The DTLS fingerprint is authenticated by our encrypted offer/answer. This
+  // channel stays with that peer even when the signaling service disappears.
+  const control = pc.createDataChannel('bambicam-control', { negotiated: true, id: 0 });
   const pendingIce: RTCIceCandidateInit[] = [];
   let closed = false;
   let ready = false;
@@ -33,6 +40,27 @@ export function createPeer(options: Options) {
   let grace: ReturnType<typeof setTimeout> | undefined;
   let pathTimer: ReturnType<typeof setInterval> | undefined;
   let lastPath: Path | undefined;
+  let mode = options.mode ?? 'video';
+  function reportMode() {
+    if (closed || options.role !== 'baby' || control.readyState !== 'open') return;
+    try {
+      control.send(JSON.stringify({ type: 'mode', mode }));
+    } catch {
+      // Reconnect if the parent can no longer receive the current media mode.
+      options.onLost();
+    }
+  }
+  control.onopen = reportMode;
+  control.onmessage = ({ data }) => {
+    if (closed || typeof data !== 'string' || data.length > 128) return;
+    try {
+      const message = JSON.parse(data);
+      if (message.type === 'stop') options.onStopped();
+      else if (options.role === 'parent' && message.type === 'mode' &&
+        ['video', 'reduced', 'audio'].includes(message.mode)) options.onMode?.(message.mode);
+    } catch { /* Ignore malformed optional control messages. */ }
+  };
+  control.onclose = () => { if (!closed) options.onStopped(); };
   const timeout = setTimeout(() => options.onLost(), 25_000);
 
   // The selected ICE pair can change while connected, so keep checking.
@@ -111,8 +139,18 @@ export function createPeer(options: Options) {
   }
 
   const kinds = new Map<RTCRtpSender, string>();
-  for (const track of options.stream?.getTracks() ?? [])
-    kinds.set(pc.addTrack(track, options.stream!), track.kind);
+  if (options.role === 'baby') {
+    // Reserve both senders, including when starting with microphone only, so
+    // the camera can be enabled later without a new signaling exchange.
+    for (const kind of ['audio', 'video']) {
+      const track = options.stream?.getTracks().find((track) => track.kind === kind);
+      const { sender } = pc.addTransceiver(track ?? kind, {
+        direction: 'sendonly',
+        streams: options.stream ? [options.stream] : [],
+      });
+      kinds.set(sender, kind);
+    }
+  }
   pc.onicecandidate = ({ candidate }) => {
     if (candidate && !closed) void send({ type: 'ice', candidate: candidate.toJSON() });
   };
@@ -146,16 +184,19 @@ export function createPeer(options: Options) {
     },
     /** Swap capture tracks in place, without renegotiation, after the camera
      *  or microphone was reacquired. Kinds without a new track go silent. */
-    async replaceStream(stream: MediaStream) {
+    async replaceStream(stream: MediaStream, nextMode = mode) {
       if (closed) return;
       await Promise.all(
         pc.getSenders().map((sender) => {
           const kind = kinds.get(sender);
           if (!kind) return undefined;
           const track = stream.getTracks().find((candidate) => candidate.kind === kind) ?? null;
+          if (sender.track === track) return undefined;
           return sender.replaceTrack(track);
         }),
       );
+      mode = nextMode;
+      reportMode();
     },
     close() {
       if (closed) return;
@@ -163,6 +204,9 @@ export function createPeer(options: Options) {
       clearTimeout(timeout);
       clearTimeout(grace);
       clearInterval(pathTimer);
+      try {
+        if (control.readyState === 'open') control.send(JSON.stringify({ type: 'stop' }));
+      } catch { /* Closing must still release media if the transport has failed. */ }
       pc.close();
       remote.getTracks().forEach((track) => track.stop());
     },

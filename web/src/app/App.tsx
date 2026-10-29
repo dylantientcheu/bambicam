@@ -8,9 +8,12 @@ import {
   delay,
   isTransient,
   startCapture,
+  captureConstraints,
+  captureModes,
   watchCapture,
   whenVisible,
   type CaptureState,
+  type CaptureMode,
 } from '../baby/capture';
 import {
   defaultRelay,
@@ -85,6 +88,10 @@ export function App() {
   const [stage, setStage] = useState<Stage>('connecting');
   const [path, setPath] = useState<Path | null>(null);
   const [capture, setCapture] = useState<CaptureState>('live');
+  const [mode, setMode] = useState<CaptureMode>('video');
+  const modeRef = useRef<CaptureMode>('video');
+  const [remoteMode, setRemoteMode] = useState<CaptureMode>('video');
+  const [signalingReady, setSignalingReady] = useState(false);
   const [error, setError] = useState(initial.error ?? '');
   const [scanning, setScanning] = useState(false);
   const [link, setLink] = useState('');
@@ -121,11 +128,11 @@ export function App() {
       onState: setCapture,
       onEnded: () => void recoverCapture(local),
     });
-    return () => {
-      unwatch();
-      for (const track of local.getTracks()) track.stop();
-    };
+    return unwatch;
   }, [local]);
+  useEffect(() => () => {
+    localRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
   useEffect(() => {
     if (!running || !role || !secret) return;
     let active = true;
@@ -136,12 +143,17 @@ export function App() {
     setStage('connecting');
     setRemote(null);
     setPath(null);
+    setSignalingReady(false);
+    setRemoteMode('video');
     void connectMonitor({
       role,
       secret,
       relay,
       stun,
       stream: localRef.current ?? undefined,
+      mode: modeRef.current,
+      onSignaling: (ready) => { if (active) setSignalingReady(ready); },
+      onMode: (value) => { if (active) setRemoteMode(value); },
       onStage: (value) => {
         if (active) {
           if (value === 'live') {
@@ -202,7 +214,7 @@ export function App() {
     setSecret('');
     setError('');
     setScanning(false);
-    local?.getTracks().forEach((track) => track.stop());
+    localRef.current?.getTracks().forEach((track) => track.stop());
     localRef.current = null;
     setLocal(null);
     setRemote(null);
@@ -220,7 +232,7 @@ export function App() {
     try {
       setRelay(validateRelay(relay, pageUrl));
       setStun(validateStun(stun));
-      const stream = await startCapture();
+      const stream = await startCapture(undefined, modeRef.current);
       if (request !== captureRequest.current) {
         stream.getTracks().forEach((track) => track.stop());
         return;
@@ -234,9 +246,61 @@ export function App() {
       if (request !== captureRequest.current) return;
       setError(
         err instanceof DOMException
-          ? 'Camera or microphone unavailable. Allow both permissions and close any other app using the camera, then try again.'
+          ? modeRef.current === 'audio'
+            ? 'Microphone unavailable. Allow microphone access and close any other app using it, then try again.'
+            : 'Camera or microphone unavailable. Allow both permissions and close any other app using the camera, then try again.'
           : (err as Error).message,
       );
+    } finally {
+      if (request === captureRequest.current) setBusy(false);
+    }
+  }
+  async function changeMode(nextMode: CaptureMode) {
+    if (busy || capture !== 'live' || nextMode === modeRef.current) return;
+    if (!running || !localRef.current) {
+      modeRef.current = nextMode;
+      setMode(nextMode);
+      return;
+    }
+    const request = ++captureRequest.current;
+    const old = localRef.current;
+    let camera: MediaStream | undefined;
+    setBusy(true);
+    setError('');
+    try {
+      let stream: MediaStream;
+      if (nextMode === 'audio') stream = new MediaStream(old.getAudioTracks());
+      else {
+        const constraints = captureConstraints(old, nextMode).video as MediaTrackConstraints;
+        const track = old.getVideoTracks()[0];
+        if (track) {
+          await track.applyConstraints(constraints);
+          stream = old;
+        } else {
+          camera = await navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
+          stream = new MediaStream([...old.getAudioTracks(), ...camera.getVideoTracks()]);
+        }
+      }
+      if (request !== captureRequest.current) {
+        camera?.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      await monitor.current?.replaceStream(stream, nextMode);
+      if (request !== captureRequest.current) {
+        camera?.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      // Keep the microphone alive through manual video changes. A disabled or
+      // hidden video element alone would still leave the camera transmitting.
+      modeRef.current = nextMode;
+      setMode(nextMode);
+      localRef.current = stream;
+      setLocal(stream);
+      if (nextMode === 'audio') old.getVideoTracks().forEach((track) => track.stop());
+    } catch {
+      camera?.getTracks().forEach((track) => track.stop());
+      if (request === captureRequest.current)
+        setError('Could not change monitoring mode. Check camera access and try again.');
     } finally {
       if (request === captureRequest.current) setBusy(false);
     }
@@ -247,13 +311,14 @@ export function App() {
   async function recoverCapture(old: MediaStream) {
     const request = ++captureRequest.current;
     old.getTracks().forEach((track) => track.stop());
+    setBusy(false);
     setCapture('recovering');
     setError('');
     for (let attempt = 0; ; attempt++) {
       await whenVisible();
       if (request !== captureRequest.current) return;
       try {
-        const stream = await startCapture(old);
+        const stream = await startCapture(old, modeRef.current);
         if (request !== captureRequest.current) {
           stream.getTracks().forEach((track) => track.stop());
           return;
@@ -261,7 +326,9 @@ export function App() {
         localRef.current = stream;
         setLocal(stream);
         setCapture('live');
-        monitor.current?.replaceStream(stream);
+        void monitor.current?.replaceStream(stream, modeRef.current).catch(() => {
+          if (request === captureRequest.current) setGeneration((value) => value + 1);
+        });
         return;
       } catch (err) {
         if (request !== captureRequest.current) return;
@@ -275,7 +342,9 @@ export function App() {
     localRef.current = null;
     setLocal(null);
     setError(
-      'The camera or microphone stopped and could not be restarted. Check this device, close other apps using the camera, and start capture again.',
+      modeRef.current === 'audio'
+        ? 'The microphone stopped and could not be restarted. Check microphone access and start capture again.'
+        : 'The camera or microphone stopped and could not be restarted. Check this device, close other apps using the camera, and start capture again.',
     );
   }
   function readCode(value: string) {
@@ -358,6 +427,18 @@ export function App() {
 
   const watching = running && role === 'parent';
   const paired = stage === 'live';
+  const mediaSettings = (
+    <label class="field">
+      Monitoring mode
+      <select value={mode} disabled={busy || capture !== 'live'}
+        onChange={(event) => void changeMode(event.currentTarget.value as CaptureMode)}>
+        {Object.entries(captureModes).map(([value, label]) => <option value={value}>{label}</option>)}
+      </select>
+      <small>{mode === 'audio' ? 'Microphone on, camera off.' : mode === 'reduced'
+        ? 'Smaller picture, up to 10 frames per second. Sound stays on.'
+        : 'Full video with continuous sound.'}</small>
+    </label>
+  );
   const settings = (
     <details class="menu-section">
       <summary>
@@ -365,7 +446,21 @@ export function App() {
       </summary>
       <div class="menu-content">
         {path && pathLabel[path] && <p class="path-note">{pathLabel[path]}</p>}
+        <p class="connection-origin">App loaded from: {location.origin}</p>
+        <p>Local media does not mean the app and connection service are hosted locally.</p>
         <fieldset disabled={running || busy || scanning}>
+          <label class="field">
+            Connection preference
+            <select value={stun ? 'across' : 'local'} onChange={(event) =>
+              setStun(event.currentTarget.value === 'local' ? '' : trustedServers.stun || DEFAULT_STUN)}>
+              <option value="local">Same network</option>
+              <option value="across">Across networks</option>
+            </select>
+          </label>
+          <p>
+            Same network turns off external discovery. To work without internet, host both
+            this app and its connection service on your home network.
+          </p>
           <label class="field">
             Relay address
             <input
@@ -434,6 +529,7 @@ export function App() {
                     <Icon name="scan" size={20} /> New pairing code
                   </button>
                 )}
+                {role === 'baby' && running && <div class="menu-content">{mediaSettings}</div>}
                 {role === 'parent' && running && saved?.secret !== secret && (
                   <button
                     class="menu-row"
@@ -512,6 +608,9 @@ export function App() {
             {error}
           </p>
         )}
+        {paired && !signalingReady && !watching && (
+          <p class="notice">Monitoring continues. Connection setup is unavailable; retrying in the background.</p>
+        )}
         {!role ? (
           <div class="welcome">
             <div class="intro">
@@ -588,13 +687,15 @@ export function App() {
               {capture !== 'live' && (
                 <p class="notice" data-capture={capture}>
                   {capture === 'paused'
-                    ? 'Camera paused by the system. Bring this app to the front.'
-                    : 'Restarting camera and microphone…'}
+                    ? mode === 'audio'
+                      ? 'Microphone paused by the system. Bring this app to the front.'
+                      : 'Camera paused by the system. Bring this app to the front.'
+                    : mode === 'audio' ? 'Restarting microphone…' : 'Restarting camera and microphone…'}
                 </p>
               )}
               <div class={`monitor-layout ${!showCode ? 'is-paired' : ''}`}>
                 <div class="baby-picture">
-                  <Video stream={local} local />
+                  <Video stream={local} local audioOnly={mode === 'audio'} />
                   {paired && (
                     <div class="baby-tools">
                       <NightMode connected={paired && capture === 'live' && !optionsOpen && !showCode && !joinRejected} />
@@ -619,8 +720,10 @@ export function App() {
               </span>
               <h1>Baby camera</h1>
               <p>Leave this phone with your little one.</p>
+              {mediaSettings}
               <button class="button" disabled={!secure || busy} onClick={startBaby}>
-                {busy ? 'Allow camera & microphone…' : 'Start camera & microphone'}
+                {mode === 'audio' ? (busy ? 'Allow microphone…' : 'Start microphone')
+                  : (busy ? 'Allow camera & microphone…' : 'Start camera & microphone')}
               </button>
             </div>
           )
@@ -645,6 +748,8 @@ export function App() {
               status={labels[stage]}
               live={paired}
               notice={error}
+              mode={remoteMode}
+              signalingReady={signalingReady}
             />
             <ScreenAwake active={stage !== 'ended'} />
             {stage === 'ended' && (

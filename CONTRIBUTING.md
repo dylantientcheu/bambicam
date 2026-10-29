@@ -11,6 +11,14 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
+If this machine cannot reliably route WebRTC between isolated browser contexts,
+`BAMBICAM_TEST_LOOPBACK=1 npm run test:e2e` enables loopback ICE interfaces,
+disables Chromium's mDNS address masking and grants synthetic camera/microphone
+permission to both contexts so those interfaces can be enumerated. Media still
+uses real ICE/DTLS/SRTP. This test profile does not validate phone permissions,
+LAN routing or mDNS; keep the normal run and physical-device checklist as the
+default acceptance paths. The app itself is unchanged by this test setting.
+
 For hosting changes, build both Dockerfiles and follow the smoke checks in
 [SELF-HOSTING.md](docs/SELF-HOSTING.md). Add focused regression tests for changes
 to authentication, connection limits, cleanup, or reconnect behavior. Never use

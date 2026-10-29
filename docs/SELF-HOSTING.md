@@ -4,6 +4,13 @@ Docker Compose runs two small containers: Caddy serves the built app and proxies
 `/relay` to Node. The relay has no public Docker port, database, or volume. Caddy
 stores certificates in named volumes. The app and relay share one browser origin.
 
+Compose builds default to **Same network**, with external STUN discovery off.
+To enable discovery across networks by default, set
+`BAMBICAM_STUN_URL=stun:stun.cloudflare.com:3478` in `.env` and rebuild the web
+image. This is a build-time setting. You can also change the preference on the
+baby phone before pairing; the pairing link carries it to the parent. Existing
+remembered pairings keep their saved settings until replaced.
+
 ## Local smoke check
 
 Install Docker with Compose, then:
@@ -27,6 +34,47 @@ npm run smoke:relay -- ws://127.0.0.1:8080/relay
 
 Stop with `docker compose down`. It keeps the certificate volumes. Avoid `down -v`
 unless you intentionally want to delete those certificates and settings.
+
+## Without internet on your home network
+
+Both app delivery and signaling must run locally. A public deployment or
+Tailscale setup is not, by itself, an internet-independent installation.
+No service worker or offline app-shell cache is required or installed.
+
+For a local Node setup, install the dependencies while online. Use a fixed LAN
+address for the host and a certificate trusted by both phones. With
+[mkcert](https://github.com/FiloSottile/mkcert) installed, replace `192.168.1.50`
+below with your host's address:
+
+```sh
+npm ci
+mkdir -p .certs
+mkcert -install
+mkcert -cert-file .certs/lan.pem -key-file .certs/lan-key.pem 192.168.1.50 localhost 127.0.0.1
+VITE_STUN_URL='' HTTPS_CERT="$PWD/.certs/lan.pem" HTTPS_KEY="$PWD/.certs/lan-key.pem" RELAY_ALLOWED_ORIGINS='https://192.168.1.50:5173' npm run dev
+```
+
+Install and trust **only** the public `rootCA.pem` from `mkcert -CAROOT` on both
+phones. On iOS, enable full trust for that installed root certificate in
+Certificate Trust Settings. Never share `rootCA-key.pem` or `lan-key.pem`.
+The `.certs` directory is ignored by Git. This is the existing development
+server, exposed to your home network; do not forward its ports to the internet.
+
+Open `https://192.168.1.50:5173` on both phones and select **Same network** in
+Options → Advanced. Leave the same-origin relay address in place. Use a network
+without guest/client isolation, and keep the host awake. If the host address
+changes, update the certificate, allowed origin and URL.
+
+Acceptance on your actual phones:
+
+1. Disable mobile data on both phones and disconnect the router's internet uplink,
+   leaving the home Wi-Fi and local host running.
+2. Load the local HTTPS address afresh, pair and verify moving video and audible sound.
+3. Reload the parent and reconnect. Switch media modes and confirm audible sound.
+4. Restore the internet connection when finished.
+
+Browser tests cover local pairing without STUN and survival of signaling outages.
+They do not certify this physical network, certificate trust or overnight operation.
 
 ## Public HTTPS with Caddy
 
@@ -94,8 +142,10 @@ docker compose logs --tail=30
 ```
 
 A web container update drops its proxied WebSockets; a relay update also drops
-signaling. The app reconnects, but expect a visible interruption. Apply updates
-outside monitoring sessions. To roll back, check out the previously tested
+signaling. An established media connection is preserved while signaling retries,
+as long as its direct path stays usable. Fresh pairing and recovery of failed
+media still need the relay. Apply updates outside monitoring sessions and reload
+both devices to use the new client behavior. To roll back, check out the previously tested
 commit and rebuild. An already open app keeps its loaded frontend until refresh.
 
 Keep exactly one relay replica: in-memory rooms are not shared. Test pairing,

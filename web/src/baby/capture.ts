@@ -1,17 +1,29 @@
 export type CaptureState = 'live' | 'paused' | 'recovering';
+export type CaptureMode = 'video' | 'reduced' | 'audio';
+
+export const captureModes: Record<CaptureMode, string> = {
+  video: 'Video & sound',
+  reduced: 'Reduced video & sound',
+  audio: 'Audio only',
+};
 
 /** Rear camera, 720p, and untouched audio: a nursery is quiet and processing
  *  built for calls removes exactly the small sounds a parent listens for. */
-export function captureConstraints(previous?: MediaStream): MediaStreamConstraints {
+export function captureConstraints(previous?: MediaStream, mode: CaptureMode = 'video'): MediaStreamConstraints {
   const device = (kind: 'video' | 'audio') =>
     previous?.getTracks().find((track) => track.kind === kind)?.getSettings().deviceId;
   const video = device('video');
   const audio = device('audio');
   return {
-    video: {
+    video: mode === 'audio' ? false : {
       facingMode: { ideal: 'environment' },
       width: { ideal: 1280 },
       height: { ideal: 720 },
+      ...(mode === 'reduced' ? {
+        width: { ideal: 640, max: 640 },
+        height: { ideal: 360, max: 360 },
+        frameRate: { ideal: 10, max: 10 },
+      } : {}),
       ...(video ? { deviceId: { ideal: video } } : {}),
     },
     audio: {
@@ -23,8 +35,8 @@ export function captureConstraints(previous?: MediaStream): MediaStreamConstrain
   };
 }
 
-export function startCapture(previous?: MediaStream): Promise<MediaStream> {
-  return navigator.mediaDevices.getUserMedia(captureConstraints(previous));
+export function startCapture(previous?: MediaStream, mode: CaptureMode = 'video'): Promise<MediaStream> {
+  return navigator.mediaDevices.getUserMedia(captureConstraints(previous, mode));
 }
 
 /** Permission problems do not fix themselves; device and system interruptions often do. */

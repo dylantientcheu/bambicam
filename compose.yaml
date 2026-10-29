@@ -21,6 +21,9 @@ services:
     build:
       context: .
       dockerfile: docker/web.Dockerfile
+      args:
+        # Self-hosted deployments default to same-network discovery.
+        VITE_STUN_URL: ${BAMBICAM_STUN_URL:-}
     restart: unless-stopped
     environment:
       SITE_ADDRESS: ${BAMBICAM_DOMAIN:-:8080}

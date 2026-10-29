@@ -8,6 +8,10 @@ Two devices, one private live view. Leave a phone in the nursery as the **baby
 unit** and use another device as the **parent unit**. Audio and video travel
 directly between them over encrypted WebRTC. Nothing is recorded.
 
+Open source under the [MIT license](LICENSE). Run the app and connection service
+on your own infrastructure, including your home network; no Bambicam account or
+hosted service is required for a locally hosted setup.
+
 **[Open bambi.cam](https://bambi.cam)** · [Self-host](docs/SELF-HOSTING.md) ·
 [Privacy](docs/PRIVACY.md) · [Contribute](CONTRIBUTING.md)
 
@@ -24,12 +28,36 @@ The app includes night mode, a sound meter, automatic reconnection, optional
 remembered pairing, fullscreen, and picture-in-picture where supported.
 Use **Options → Add to Home Screen** for installation instructions.
 
+Choose **Monitoring mode** on the baby phone before starting, or in **Options**
+while monitoring: full video, reduced video (up to 640 × 360 at 10 fps), or
+**Audio only**. Audio only stops the camera and video transmission while keeping
+the microphone on. Modes never change automatically. Browser background and
+locked-screen limits still apply to audio-only monitoring.
+
 <p>
   <img src="docs/images/home.png" width="260" alt="Bambicam role selection">
   <img src="docs/images/parent.png" width="260" alt="Parent viewer showing synthetic video">
 </p>
 
 Screenshots use synthetic video, with no nursery footage or pairing code.
+
+## Local operation and outages
+
+Wi-Fi does not require an internet connection. To start and restart sessions
+without internet, host both the app and signaling relay on your home network,
+use trusted HTTPS on the phones, and select **Options → Advanced → Connection
+preference → Same network**. This disables STUN discovery; it does not change
+the app host or relay address. Docker Compose builds default to this preference.
+See [local hosting](docs/SELF-HOSTING.md#without-internet-on-your-home-network).
+
+Once paired, an established direct stream stays open during a signaling outage
+as long as the media connection still works. Connection setup retries in the
+background. This can preserve local monitoring through an internet outage;
+losing Wi-Fi itself, closing a browser, or reloading still requires recovery.
+**New pairing code** and **Stop** still close the current media connection.
+
+The connection details distinguish the media route from the app host and relay.
+Local media alone does not mean the hosted app has no internet dependencies.
 
 ## Know the limits
 

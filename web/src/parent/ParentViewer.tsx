@@ -5,25 +5,33 @@ import { IconButton } from '../ui/IconButton';
 import { useVideoPresentation } from '../ui/useVideoPresentation';
 import { AudioLevel } from './AudioLevel';
 import './viewer.css';
+import type { CaptureMode } from '../baby/capture';
 
 export function ParentViewer({
   stream,
   status,
   live,
   notice,
+  mode,
+  signalingReady,
 }: {
   stream: MediaStream | null;
   status: string;
   live: boolean;
   notice: string;
+  mode: CaptureMode;
+  signalingReady: boolean;
 }) {
   const video = useRef<HTMLVideoElement>(null);
   const frame = useRef<HTMLDivElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [controls, setControls] = useState(true);
   const view = useVideoPresentation(video, frame, stream);
-  const staleSeconds = useFrameWatch(video, stream);
+  const staleSeconds = useFrameWatch(video, stream, mode !== 'audio');
   const stale = staleSeconds > 0;
+  useEffect(() => {
+    if (mode === 'audio' && view.pip) void view.togglePip();
+  }, [mode, view.pip]);
 
   function reveal() {
     setControls(true);
@@ -55,6 +63,7 @@ export function ParentViewer({
           videoRef={video}
           stream={stream}
           status={status === 'Connected' ? undefined : status}
+          audioOnly={mode === 'audio'}
         />
         {view.pip && (
           <div class="pip-placeholder">
@@ -65,14 +74,16 @@ export function ParentViewer({
           </div>
         )}
       </div>
-      {(stale || (!live && stream) || notice || view.error) && (
-        <div class="viewer-notice" role="alert" data-stale={stale ? 'true' : undefined}>
+      {(stale || (!live && stream) || notice || view.error || (live && !signalingReady)) && (
+        <div class="viewer-notice" role={stale || !live || notice || view.error ? 'alert' : undefined} data-stale={stale ? 'true' : undefined}>
           <p>
             {stale
               ? 'Video may be frozen.'
               : view.error
                 ? 'This view isn’t available.'
-                : 'Connection interrupted. Retrying…'}
+                : live && !notice
+                  ? 'Monitoring continues. Connection setup is unavailable; retrying in the background.'
+                  : 'Connection interrupted. Retrying…'}
           </p>
           {stale ? (
             <small>No new picture for {staleSeconds}s. Check the baby phone.</small>
@@ -90,7 +101,7 @@ export function ParentViewer({
         <AudioLevel stream={stream} />
       </div>
       <div class="viewer-toolbar" aria-label="Viewing controls">
-        {(view.pipAvailable || view.pip) && (
+        {((mode !== 'audio' && view.pipAvailable) || view.pip) && (
           <IconButton
             icon="pip"
             pressed={view.pip}

@@ -61,7 +61,7 @@ async function closeSocket(page: Page) {
   await page.evaluate(() => (window as any).__sockets.at(-1).close());
 }
 
-test('either side reconnects repeatedly with fresh handshakes and the original camera', async ({
+test('either signaling socket reconnects without replacing the authenticated media session', async ({
   page: baby,
   browser,
 }) => {
@@ -78,20 +78,29 @@ test('either side reconnects repeatedly with fresh handshakes and the original c
     await observeConnections(parent);
     await parent.goto(link);
     await connected(parent);
+    const streamId = await parent.getByLabel('Live baby video').evaluate(
+      (video: HTMLVideoElement) => (video.srcObject as MediaStream).id,
+    );
     for (const device of [parent, baby, parent, baby]) {
-      const before = await device.evaluate(() => (window as any).__sessions.length);
+      const before = await device.evaluate(() => (window as any).__sockets.length);
       await closeSocket(device);
-      await expect(device.getByRole('status')).toHaveText('Reconnecting');
+      await expect(device.getByRole('status')).toHaveText('Connected');
+      await expect(device.getByText(/Monitoring continues/)).toBeVisible();
       await expect
-        .poll(() => device.evaluate(() => (window as any).__sessions.length))
+        .poll(() => device.evaluate(() => (window as any).__sockets.length))
         .toBeGreaterThan(before);
+      await expect(device.getByText(/Monitoring continues/)).toHaveCount(0);
       await connected(parent);
       await expect(baby.getByRole('status')).toHaveText('Connected');
+      expect(await parent.getByLabel('Live baby video').evaluate(
+        (video: HTMLVideoElement) => (video.srcObject as MediaStream).id,
+      )).toBe(streamId);
     }
     for (const device of [parent, baby]) {
       const sessions = await device.evaluate(() => (window as any).__sessions as string[]);
       expect(new Set(sessions).size).toBe(sessions.length);
-      expect(sessions.length).toBeGreaterThanOrEqual(5);
+      expect(sessions).toHaveLength(1);
+      expect(await device.evaluate(() => (window as any).__peers.length)).toBe(1);
     }
     expect(
       await baby
@@ -331,7 +340,7 @@ test('LAN-only configuration is carried to the parent without STUN traffic', asy
   }
 });
 
-test('a parent retries through an offline period and resumes when the network returns', async ({
+test('a signaling outage preserves media, while an actual media failure still clears the feed and recovers', async ({
   page: baby,
   browser,
 }) => {
@@ -344,10 +353,23 @@ test('a parent retries through an offline period and resumes when the network re
     await connected(parent);
     await context.setOffline(true);
     await closeSocket(parent);
-    await expect(parent.getByRole('status')).toHaveText('Reconnecting');
+    // Browser HTTP/WS emulation leaves the local WebRTC transport available.
+    await expect(parent.getByRole('status')).toHaveText('Connected');
     await expect
       .poll(() => parent.evaluate(() => (window as any).__sockets.length))
       .toBeGreaterThan(1);
+    await connected(parent);
+    const before = await parent.getByLabel('Live baby video').evaluate(
+      (video: HTMLVideoElement) => video.currentTime,
+    );
+    await expect.poll(() => parent.getByLabel('Live baby video').evaluate(
+      (video: HTMLVideoElement) => video.currentTime,
+    )).toBeGreaterThan(before);
+    await parent.evaluate(() => {
+      const pc = (window as any).__peers.at(-1) as RTCPeerConnection;
+      Object.defineProperty(pc, 'connectionState', { configurable: true, value: 'failed' });
+      pc.dispatchEvent(new Event('connectionstatechange'));
+    });
     // Stale media is cleared from a render effect, so allow it a moment.
     await expect
       .poll(() =>

@@ -11,7 +11,8 @@ body {
   line-height: 1.55;
 }
 button,
-input {
+input,
+select {
   font: inherit;
 }
 button {
@@ -322,7 +323,8 @@ main {
     opacity: 1;
   }
 }
-input {
+input,
+select {
   width: 100%;
   min-width: 0;
   border: 1px solid #cec4dc;
@@ -467,6 +469,9 @@ summary {
 }
 .menu-content fieldset:disabled input {
   opacity: 0.65;
+}
+.connection-origin {
+  overflow-wrap: anywhere;
 }
 .menu-content .field:first-child {
   margin-top: 12px;

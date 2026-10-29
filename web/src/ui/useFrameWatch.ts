@@ -8,12 +8,12 @@ const STALE_AFTER_MS = 5_000;
  * arriving. A WebRTC connection can report "connected" while frames stop; to a
  * parent a frozen frame of a sleeping baby looks like a sleeping baby.
  */
-export function useFrameWatch(video: RefObject<HTMLVideoElement | null>, stream: MediaStream | null) {
+export function useFrameWatch(video: RefObject<HTMLVideoElement | null>, stream: MediaStream | null, enabled = true) {
   const [staleSeconds, setStaleSeconds] = useState(0);
   useEffect(() => {
     setStaleSeconds(0);
     const element = video.current;
-    if (!stream || !element) return;
+    if (!stream || !element || !enabled) return;
     let alive = true;
     let last = performance.now();
     let frameHandle: number | undefined;
@@ -56,6 +56,6 @@ export function useFrameWatch(video: RefObject<HTMLVideoElement | null>, stream:
       document.removeEventListener('visibilitychange', fresh);
       if (frameHandle !== undefined) element.cancelVideoFrameCallback?.(frameHandle);
     };
-  }, [stream]);
+  }, [stream, enabled]);
   return staleSeconds;
 }

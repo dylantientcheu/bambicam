@@ -48,8 +48,9 @@ backoff. Pongs and messages do not extend that deadline; pairing cancels it.
 
 ## Encrypted envelope
 
-Each peer arrival has a fresh random 16-byte session nonce and a send counter
-starting at 1, including when the local relay socket survives a remote reconnect. Byte offsets:
+Each new media connection has a fresh random 16-byte session nonce and a send
+counter starting at 1. Rejoining the relay while preserving an established media
+connection does not create a new handshake. Byte offsets:
 
 | Offset | Length    | Value                                             |
 | ------ | --------- | ------------------------------------------------- |
@@ -62,7 +63,7 @@ starting at 1, including when the local relay socket survives a remote reconnect
 
 The first 22 bytes are AES-GCM additional authenticated data. Encrypt UTF-8
 JSON with the derived signaling key, a fresh 96-bit IV for every message, and
-a 128-bit tag. Never wrap a counter or reuse a channel object for a new peer arrival.
+a 128-bit tag. Never wrap a counter or reuse a channel object for a new media peer.
 Outbound and inbound operations are serialized; WebSocket preserves ordering.
 
 Receivers accept only the opposite role and increasing counters. They pin the
@@ -73,7 +74,8 @@ against a malicious relay is not a guarantee.
 
 ## Freshness handshake
 
-Both peers send encrypted `{"type":"hello"}` when the relay reports a peer.
+For a new media connection, both peers send encrypted `{"type":"hello"}` when
+the relay reports a peer.
 Each replies with encrypted `{"type":"ready","echo":"<peer session nonce>"}`;
 the echoed nonce is unpadded base64url. A ready message is accepted only after
 hello, with the pinned peer session and the receiver's own fresh nonce echoed.
@@ -86,8 +88,38 @@ replies with `{"type":"answer","sdp":"..."}`. Both send ICE as
 `{"type":"ice","candidate":<RTCIceCandidate.toJSON()>}`. Received candidates
 are queued until the remote description has been applied. There is a single
 offer/answer exchange per peer connection. Reconnection creates a fresh peer
-connection and secure channel on both sides. Media uses WebRTC's DTLS-SRTP encryption; the encrypted,
+connection and secure channel on both sides when the media connection fails.
+Media uses WebRTC's DTLS-SRTP encryption; the encrypted,
 authenticated SDP binds its fingerprints to the shared pairing secret.
+
+## Peer control and media modes
+
+Both clients create an ordered, reliable negotiated data channel named
+`bambicam-control`, ID 0. It uses WebRTC's SCTP over DTLS; its certificate
+fingerprint is authenticated by the same offer/answer exchange as media.
+Audio, video and the data channel share a bundled transport. This channel never
+passes through the signaling relay.
+
+UTF-8 JSON messages (at most 128 characters accepted by the receiver):
+
+- Baby → parent: `{"type":"mode","mode":"video"}`, with `mode` also accepting
+  `reduced` or `audio`. Sent on channel open and after a successful track change.
+  The parent does not accept mode messages from the signaling relay.
+- Either peer → peer: `{"type":"stop"}` before explicit closure, best effort.
+  Channel closure also causes the remote client to discard that media session.
+
+The baby reserves send-only audio and video transceivers in its initial offer,
+including for audio-only starts. Track replacement can therefore enable/disable
+video without a new signaling exchange. The microphone stays attached during
+manual video changes. Audio only replaces the video sender's track with `null`
+and stops camera capture. Reduced video constrains capture to at most 640 × 360
+at 10 fps. The parent suppresses the frozen-frame warning only for an explicit
+audio-only mode received from its authenticated media peer.
+
+The v1 pairing URL/encrypted envelope and relay format are unchanged. Reload
+both devices for these features: older clients lack the peer control channel,
+still tear down media on signaling loss and cannot display mode changes reliably.
+Mixed-version outage resilience is not guaranteed.
 
 ## Lifecycle and limits
 
@@ -98,14 +130,20 @@ joining the new room. Baby secrets remain in memory only.
 
 Relay loss retries with exponential backoff (1–15 seconds, plus up to 500 ms of
 jitter). A full room retries too, allowing the server heartbeat to clear a stale
-socket. A peer departure closes only the media connection and secure channel;
-the surviving relay socket waits for another arrival. A disconnected media path
-gets eight seconds to recover; failed ICE or a 25-second handshake timeout closes
-the local socket and retries. The surviving device sees peer-left and discards
-its channel, so the next peer-joined starts fresh on both sides. Async work from
-closed peers/sockets is ignored. Authentication or protocol errors fail closed
-instead of automatically trusting a new session. Relay controls can still deny
-service, as stated above.
+socket. Relay loss and untrusted `peer-left` controls do not close an established
+media connection. The UI keeps the live state while noting that connection setup
+is unavailable. Socket reconnection does not replace the existing peer or its
+callbacks. Once established, incoming relay binary packets are ignored rather
+than allowing a new arrival or replay to replace the authenticated peer.
+
+Before media is established, a socket loss/peer departure discards the incomplete
+handshake. A disconnected media path gets eight seconds to recover; failed ICE,
+peer control-channel closure or a 25-second handshake timeout discards the media
+peer and reconnects signaling. The next media session uses fresh challenges.
+Explicit Stop and code rotation always close media, even without signaling.
+Async work from closed peers/sockets is ignored. Initial authentication/protocol
+errors fail closed. A relay can still prevent setup and recovery; preserving an
+existing direct path does not guarantee availability against a malicious relay.
 
 The parent can explicitly store `{version:1, secret, relay, stun}` under
 `bambicam.remembered.v1` in localStorage. Loading validates the entry and offers a
@@ -119,5 +157,6 @@ Knowing a room ID lets an attacker occupy a slot or deny service. Knowing the
 QR secret lets a device authenticate as a peer. A two-socket cap is a limit,
 not proof that a joining device is the intended parent. The web host, browser,
 operating system, and physical devices are trusted. STUN defaults to
-`stun:stun.cloudflare.com:3478`, can be changed or disabled, and sees IP
+`stun:stun.cloudflare.com:3478` in the hosted/default web build; Compose builds
+default to STUN off. It can be changed or disabled, and sees IP
 addresses/discovery traffic but no media. TURN is not used.

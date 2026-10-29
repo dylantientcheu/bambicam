@@ -6,6 +6,7 @@ COPY relay/package.json relay/package.json
 RUN npm ci --ignore-scripts
 COPY web web
 ARG VITE_RELAY_URL
+ARG VITE_STUN_URL=stun:stun.cloudflare.com:3478
 RUN npm run build
 
 FROM caddy:2.11-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f

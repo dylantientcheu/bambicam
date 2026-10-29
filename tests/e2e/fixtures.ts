@@ -3,12 +3,26 @@ import { test as base, expect } from '@playwright/test';
 // Generate PCM in the browser rather than requiring a host microphone/audio
 // capture service. The app and the actual WebRTC transport remain unmodified.
 export const test = base.extend({
+  browser: async ({ browser }, use) => {
+    const newContext = browser.newContext;
+    if (process.env.BAMBICAM_TEST_LOOPBACK === '1') {
+      // Chromium exposes loopback ICE interfaces only to contexts with capture
+      // permission. Apply the same synthetic-device grant to both test peers.
+      browser.newContext = (options = {}) => newContext.call(browser, {
+        ...options,
+        permissions: options.permissions ?? ['camera', 'microphone', 'clipboard-read', 'clipboard-write'],
+      });
+    }
+    try { await use(browser); } finally { browser.newContext = newContext; }
+  },
   page: async ({ page }, use) => {
     await page.addInitScript(() => {
       const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       navigator.mediaDevices.getUserMedia = async (constraints) => {
         if (!constraints?.audio) return capture(constraints);
-        const stream = await capture({ video: constraints.video, audio: false });
+        const stream = constraints.video
+          ? await capture({ video: constraints.video, audio: false })
+          : new MediaStream();
         const audio = new (window as any).MediaStreamTrackGenerator({ kind: 'audio' });
         const writer = audio.writable.getWriter();
         let frame = 0;

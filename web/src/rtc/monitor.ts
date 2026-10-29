@@ -2,6 +2,7 @@ import type { Role } from '../signal/crypto';
 import { derivePairing } from '../signal/pairing';
 import { iceServers } from './ice';
 import { createPeer, type Path } from './peer';
+import type { CaptureMode } from '../baby/capture';
 
 export type Stage = 'connecting' | 'waiting' | 'pairing' | 'live' | 'reconnecting' | 'ended';
 interface Options {
@@ -10,16 +11,19 @@ interface Options {
   relay: string;
   stun: string;
   stream?: MediaStream;
+  mode?: CaptureMode;
   onStage: (stage: Stage) => void;
   onStream: (stream: MediaStream | null) => void;
   onPath?: (path: Path | null) => void;
   onError: (message: string) => void;
   onJoinRejected?: () => void;
+  onSignaling?: (ready: boolean) => void;
+  onMode?: (mode: CaptureMode) => void;
 }
 export interface MonitorHandle {
   close: () => void;
   /** Send a reacquired camera/microphone to the current and future peers. */
-  replaceStream: (stream: MediaStream) => void;
+  replaceStream: (stream: MediaStream, mode?: CaptureMode) => Promise<void>;
 }
 
 export async function connectMonitor(options: Options): Promise<MonitorHandle> {
@@ -28,6 +32,8 @@ export async function connectMonitor(options: Options): Promise<MonitorHandle> {
   let stopped = false;
   let attempts = 0;
   let hadPeer = false;
+  let established = false;
+  let mediaLive = false;
   let notice = '';
   let ws: WebSocket | undefined;
   let peer: ReturnType<typeof createPeer> | undefined;
@@ -40,6 +46,8 @@ export async function connectMonitor(options: Options): Promise<MonitorHandle> {
     options.onError(message);
   }
   function dropPeer() {
+    established = false;
+    mediaLive = false;
     peer?.close();
     peer = undefined;
     options.onStream(null);
@@ -49,13 +57,14 @@ export async function connectMonitor(options: Options): Promise<MonitorHandle> {
     clearTimeout(timer);
     const old = ws;
     ws = undefined; // Invalidate callbacks before closing the socket.
-    dropPeer();
+    options.onSignaling?.(false);
     old?.close();
   }
   function close() {
     if (stopped) return;
     stopped = true;
     clearTimeout(retry);
+    dropPeer();
     dropSocket();
     window.removeEventListener('online', resume);
     document.removeEventListener('visibilitychange', resume);
@@ -67,7 +76,10 @@ export async function connectMonitor(options: Options): Promise<MonitorHandle> {
   function reconnect(message: string) {
     if (stopped) return;
     dropSocket();
-    status('reconnecting', message);
+    if (!established) {
+      dropPeer();
+      status('reconnecting', message);
+    } else if (mediaLive) status('live', '');
     clearTimeout(retry);
     const delay = Math.min(15_000, 1_000 * 2 ** Math.min(attempts++, 4));
     retry = setTimeout(connect, delay + Math.random() * 500);
@@ -80,6 +92,7 @@ export async function connectMonitor(options: Options): Promise<MonitorHandle> {
   }
   function waitForPeer() {
     clearTimeout(timer);
+    if (established) return;
     status(hadPeer ? 'reconnecting' : 'waiting');
     if (options.role === 'parent')
       timer = setTimeout(() => {
@@ -116,7 +129,7 @@ export async function connectMonitor(options: Options): Promise<MonitorHandle> {
     socket.onerror = () => {};
     socket.onclose = (event) => {
       if (!current()) return;
-      if (event.code === 1008 && event.reason !== 'Room full') {
+      if (!established && event.code === 1008 && event.reason !== 'Room full') {
         fail('The relay refused this session. Check the relay address or scan a new code.');
       } else
         reconnect(
@@ -128,7 +141,9 @@ export async function connectMonitor(options: Options): Promise<MonitorHandle> {
     socket.onmessage = ({ data }) => {
       if (!current()) return;
       if (data instanceof ArrayBuffer) {
-        peer?.receive(data);
+        // A live authenticated peer cannot be replaced by a relay arrival or
+        // replay. Wait for the actual media/control connection to fail first.
+        if (!established) peer?.receive(data);
         return;
       }
       try {
@@ -136,55 +151,77 @@ export async function connectMonitor(options: Options): Promise<MonitorHandle> {
         if (message.type === 'joined') waitForPeer();
         else if (message.type === 'peer-rejected') options.onJoinRejected?.();
         else if (message.type === 'peer-left') {
-          dropPeer();
-          notice = 'The other device left. Waiting for it to return; keep both apps open.';
-          waitForPeer();
-        } else if (message.type === 'peer-joined' && !peer) {
-          hadPeer = true;
+          options.onSignaling?.(false);
+          if (!established) {
+            dropPeer();
+            notice = 'The other device left. Waiting for it to return; keep both apps open.';
+            waitForPeer();
+          }
+        } else if (message.type === 'peer-joined') {
           clearTimeout(timer);
+          attempts = 0;
+          options.onSignaling?.(true);
+          if (peer) return;
+          hadPeer = true;
           status('pairing');
+          // Peer callbacks belong to the media session, not a particular socket.
+          const activePeer = () => !stopped && peer === next;
           const next = createPeer({
             key,
             role: options.role,
             stream: options.stream,
+            mode: options.mode,
             iceServers: servers,
             send: (packet) => {
-              if (current() && peer === next) socket.send(packet);
+              if (activePeer() && ws?.readyState === WebSocket.OPEN) ws.send(packet);
             },
             onStream: (stream) => {
-              if (current() && peer === next) options.onStream(stream);
+              if (activePeer()) options.onStream(stream);
             },
             onConnected: () => {
-              if (!current() || peer !== next) return;
+              if (!activePeer()) return;
+              established = true;
+              mediaLive = true;
               attempts = 0;
               status('live', '');
             },
             onPath: (path) => {
-              if (current() && peer === next) options.onPath?.(path);
+              if (activePeer()) options.onPath?.(path);
             },
             onInterrupted: () => {
-              if (current() && peer === next)
+              if (activePeer()) {
+                mediaLive = false;
                 status('reconnecting', 'Connection interrupted. Trying to recover…');
+              }
             },
             onLost: () => {
-              if (current() && peer === next)
+              if (activePeer()) {
+                dropPeer();
                 reconnect(
                   servers.length
                     ? 'A direct connection could not be maintained. Some mobile, guest, or restricted networks block it. Try the same Wi-Fi. Retrying automatically; no media relay is configured.'
                     : 'Could not connect directly. Use the same Wi-Fi with device isolation disabled, or enable STUN in Connection settings. Retrying automatically.',
                 );
+              }
             },
             onInvalid: () => {
-              if (current() && peer === next)
+              if (activePeer())
                 fail(
                   'The secure handshake could not be verified. Generate a new code and scan it again.',
                 );
             },
+            onStopped: () => {
+              if (!activePeer()) return;
+              dropPeer();
+              reconnect('The other device left or its connection stopped. Waiting for it to return; keep both apps open.');
+            },
+            onMode: (mode) => { if (activePeer()) options.onMode?.(mode); },
           });
           peer = next;
         }
       } catch {
-        fail('Could not start a secure session. Check connection settings and try again.');
+        if (established) reconnect('Connection service unavailable. Retrying automatically.');
+        else fail('Could not start a secure session. Check connection settings and try again.');
       }
     };
   }
@@ -194,10 +231,14 @@ export async function connectMonitor(options: Options): Promise<MonitorHandle> {
   connect();
   return {
     close,
-    replaceStream(stream) {
+    async replaceStream(stream, mode = options.mode) {
+      if (stopped) return;
+      const currentPeer = peer;
+      await currentPeer?.replaceStream(stream, mode);
       if (stopped) return;
       options.stream = stream;
-      void peer?.replaceStream(stream).catch(() => {});
+      options.mode = mode;
+      if (peer !== currentPeer) await peer?.replaceStream(stream, mode);
     },
   };
 }

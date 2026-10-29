@@ -87,8 +87,14 @@ defined in `relay/server.mjs`; they reduce resource exhaustion, not distributed
 denial of service. Edge rate limits, monitoring and resource limits remain necessary.
 
 Run one relay instance. Rooms are in memory and are not shared across replicas.
-Restarting it interrupts the current client media session, which then reconnects
-with fresh challenges. Test deployment recovery and monitor hosting costs/uptime.
+Restarting it interrupts signaling. Current clients preserve an established
+authenticated media connection while rejoining the relay, and ignore relay
+arrivals/binary packets until that media connection ends. A new relay occupant
+does not inherit the existing media connection. Explicit Stop and code rotation
+close media even during an outage; a peer control channel reports mode/stop
+changes over authenticated DTLS. Failed media connections still need signaling
+and fresh challenges to recover. Reload both clients after updating; older
+clients do not preserve media this way. Test deployment recovery and monitor hosting costs/uptime.
 The web and relay health endpoints test each service separately, not an entire
 two-device monitoring session.
 
